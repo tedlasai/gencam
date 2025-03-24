@@ -750,8 +750,15 @@ def main(args):
 
     # We only train the additional adapter controlnet layers
     text_encoder.requires_grad_(False)
-    transformer.requires_grad_(True)
+    #transformer.requires_grad_(True)
     vae.requires_grad_(False)
+
+    for name, param in transformer.named_parameters():
+        if 'transformer_blocks.3' in name: #or 'conv_norm_out' in name or 'conv_out' in name or 'conv_in' in name or 'spatial_res_block' in name or 'up_block' in name:
+            print("Adding to trainable", name)
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
 
     # For mixed precision training we cast all non-trainable weights (vae, text_encoder and transformer) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -1044,6 +1051,7 @@ def main(args):
 
                 # Denoise
                 latent_pred = scheduler.get_velocity(predicted_noise, latent_noisy, timesteps)
+                
 
                 alphas_cumprod = scheduler.alphas_cumprod[timesteps]
                 weights = 1 / (1 - alphas_cumprod)

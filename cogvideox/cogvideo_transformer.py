@@ -48,14 +48,22 @@ class CustomCogVideoXTransformer3DModel(CogVideoXTransformer3DModel):
 
         # 3. Transformer blocks
         for i, block in enumerate(self.transformer_blocks):
-            if torch.is_grad_enabled() and self.gradient_checkpointing:
-                hidden_states, encoder_hidden_states = self._gradient_checkpointing_func(
-                    block,
+            if self.training and self.gradient_checkpointing:
+
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
+
+                    return custom_forward
+
+                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                hidden_states, encoder_hidden_states = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
                     hidden_states,
                     encoder_hidden_states,
                     emb,
                     image_rotary_emb,
-                    attention_kwargs,
+                    **ckpt_kwargs,
                 )
             else:
                 hidden_states, encoder_hidden_states = block(
@@ -63,7 +71,6 @@ class CustomCogVideoXTransformer3DModel(CogVideoXTransformer3DModel):
                     encoder_hidden_states=encoder_hidden_states,
                     temb=emb,
                     image_rotary_emb=image_rotary_emb,
-                    attention_kwargs=attention_kwargs,
                 )
 
         hidden_states = self.norm_final(hidden_states)

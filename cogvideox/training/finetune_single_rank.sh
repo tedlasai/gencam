@@ -1,8 +1,9 @@
 #!/bin/bash
 
-export MODEL_PATH="/home/tedlasai/genCamera/cogvideox/CogVideoX1.5-5B-I2V/models--THUDM--CogVideoX1.5-5B-I2V/snapshots/46c90528707aebbe69066390b4fe7e7d24c9c2a4"
+export MODEL_PATH="/datasets/sai/gencam/cogvideox/CogVideoX1.5-5B-I2V/models--THUDM--CogVideoX1.5-5B-I2V/snapshots/46c90528707aebbe69066390b4fe7e7d24c9c2a4"
+
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=2
 
 # if you are not using wth 8 gus, change `accelerate_config_machine_single.yaml` num_processes as your gpu number
 accelerate launch --config_file accelerate_config_machine_single.yaml --multi_gpu \
@@ -21,10 +22,10 @@ accelerate launch --config_file accelerate_config_machine_single.yaml --multi_gp
   --seed 42 \
   --mixed_precision bf16 \
   --output_dir "cogvideox-controlnet" \
-  --height 80 \
-  --width 80 \
+  --height 512 \
+  --width 512 \
   --fps 8 \
-  --max_num_frames 1 \
+  --max_num_frames 3 \
   --video_root_dir "set-path-to-video-directory" \
   --csv_path "set-path-to-csv-file" \
   --stride_min 1 \

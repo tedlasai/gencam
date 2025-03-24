@@ -37,7 +37,7 @@ dependencies:
       - decorator==5.2.1
       - decord==0.6.0
       - denku==0.0.51
-      - diffusers==0.33.0.dev0
+      - diffusers==0.32.0
       - distro==1.9.0
       - docker-pycreds==0.4.0
       - einops==0.8.1

@@ -139,6 +139,6 @@ class OpenvidControlnetDataset(BaseClass):
         caption = ""
         #video_name = item['path']
         #video_path = os.path.join(self.video_root_dir, video_name)
-        pixel_values = self.load_video_info("/home/tedlasai/genCamera/Adobe_240fps_dataset/original_high_fps_videos/GOPR9634.mp4")[:,0:3]
+        pixel_values = self.load_video_info("/datasets/sai/gencam/cogvideox/resources/car.mp4")[:,0:3]
         print("IN DATALOADER", pixel_values.shape)
         return pixel_values, caption
