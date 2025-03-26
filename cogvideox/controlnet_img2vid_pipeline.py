@@ -18,6 +18,8 @@ from diffusers import CogVideoXDDIMScheduler, CogVideoXDPMScheduler, CogVideoXIm
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.pipelines.cogvideo.pipeline_cogvideox import CogVideoXPipelineOutput, CogVideoXLoraLoaderMixin
 
+from cogvideo_controlnet import CogVideoXControlnet
+
 
 def resize_for_crop(image, crop_h, crop_w):
     img_h, img_w = image.shape[-2:]
@@ -135,7 +137,7 @@ def retrieve_latents(
         raise AttributeError("Could not access latents of provided encoder_output")
 
 
-class CogVideoXImageToVideoPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
+class CogVideoXImageToVideoControlnetPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
     r"""
     Pipeline for image-to-video generation using CogVideoX.
 
@@ -173,6 +175,7 @@ class CogVideoXImageToVideoPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin)
         text_encoder: T5EncoderModel,
         vae: AutoencoderKLCogVideoX,
         transformer: CogVideoXTransformer3DModel,
+        controlnet: CogVideoXControlnet,
         scheduler: Union[CogVideoXDDIMScheduler, CogVideoXDPMScheduler],
     ):
         super().__init__()
@@ -182,6 +185,7 @@ class CogVideoXImageToVideoPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin)
             text_encoder=text_encoder,
             vae=vae,
             transformer=transformer,
+            controlnet=controlnet,
             scheduler=scheduler,
         )
         self.vae_scale_factor_spatial = (
@@ -555,6 +559,11 @@ class CogVideoXImageToVideoPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin)
         freqs_sin = freqs_sin.to(device=device)
         return freqs_cos, freqs_sin
 
+    def prepare_controlnet_frames(self, controlnet_frames, height, width, do_classifier_free_guidance):
+        prepared_frames = prepare_frames(controlnet_frames, (height, width))
+        controlnet_encoded_frames = prepared_frames.to(dtype=self.vae.dtype, device='cuda')
+        controlnet_encoded_frames = torch.cat([controlnet_encoded_frames] * 2) if do_classifier_free_guidance else controlnet_encoded_frames
+        return controlnet_encoded_frames.contiguous()
         
     @property
     def guidance_scale(self):
@@ -576,6 +585,7 @@ class CogVideoXImageToVideoPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin)
     def __call__(
         self,
         image,
+        controlnet_frames: List[Image.Image] = None,
         prompt: Optional[Union[str, List[str]]] = None,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         height: Optional[int] = None,
@@ -591,6 +601,7 @@ class CogVideoXImageToVideoPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin)
         latents: Optional[torch.FloatTensor] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+        controlnet_latents: Optional[torch.FloatTensor] = None,
         output_type: str = "pil",
         return_dict: bool = True,
         attention_kwargs: Optional[Dict[str, Any]] = None,
@@ -599,6 +610,9 @@ class CogVideoXImageToVideoPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin)
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 226,
+        controlnet_weights: Optional[Union[float, list, np.ndarray, torch.FloatTensor]] = 1.0,
+        controlnet_guidance_start: float = 0.0,
+        controlnet_guidance_end: float = 1.0,
     ) -> Union[CogVideoXPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -768,7 +782,14 @@ class CogVideoXImageToVideoPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin)
             latents,
         )
 
-
+        # 6. Encode controlnet frames
+        if controlnet_latents is None:
+            controlnet_latents = self.prepare_controlnet_frames(
+                controlnet_frames,
+                height, 
+                width, 
+                do_classifier_free_guidance,
+            )
 
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -803,15 +824,32 @@ class CogVideoXImageToVideoPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin)
 
                 current_sampling_percent = i / len(timesteps)
                 
-              
+                controlnet_states = []
+                if (controlnet_guidance_start <= current_sampling_percent < controlnet_guidance_end):
+                    # extract controlnet hidden state
+                    controlnet_states = self.controlnet(
+                        hidden_states=latent_model_input[:, :, :16, :, :],
+                        encoder_hidden_states=prompt_embeds,
+                        image_rotary_emb=image_rotary_emb,
+                        controlnet_states=controlnet_latents,
+                        timestep=timestep,
+                        return_dict=False,
+                    )[0]
+                    if isinstance(controlnet_states, (tuple, list)):
+                        controlnet_states = [x.to(dtype=self.transformer.dtype) for x in controlnet_states]
+                    else:
+                        controlnet_states = controlnet_states.to(dtype=self.transformer.dtype)
+                        
                 # predict noise model_output
                 noise_pred = self.transformer(
                     hidden_states=latent_model_input,
                     encoder_hidden_states=prompt_embeds,
                     timestep=timestep,
-                    ofs=ofs_emb,
+                    # ofs=ofs_emb,
                     image_rotary_emb=image_rotary_emb,
                     # attention_kwargs=attention_kwargs,
+                    controlnet_states=controlnet_states,
+                    controlnet_weights=controlnet_weights,
                     return_dict=False,
                 )[0]
                 noise_pred = noise_pred.float()

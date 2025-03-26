@@ -17,7 +17,8 @@ from diffusers import CogVideoXDDIMScheduler, CogVideoXDPMScheduler
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.pipelines.cogvideo.pipeline_cogvideox import CogVideoXPipelineOutput, CogVideoXLoraLoaderMixin
 
-from cogvideo_controlnet import CogVideoXControlnet
+from cap_video.cap_cond import CAPConditioning
+from cap_video.cap_transformer import CAPVideoXTransformer3DModel
 
 
 def resize_for_crop(image, crop_h, crop_w):
@@ -123,7 +124,7 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
     
 
-class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
+class CAPVideoPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
     _optional_components = []
     model_cpu_offload_seq = "text_encoder->transformer->vae"
 
@@ -135,16 +136,14 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
     
     def __init__(
         self,
-        tokenizer: T5Tokenizer,
-        text_encoder: T5EncoderModel,
         vae: AutoencoderKLCogVideoX,
-        transformer: CogVideoXTransformer3DModel,
+        transformer: CAPVideoXTransformer3DModel,
         scheduler: Union[CogVideoXDDIMScheduler, CogVideoXDPMScheduler],
     ):
         super().__init__()
 
         self.register_modules(
-            tokenizer=tokenizer, text_encoder=text_encoder, vae=vae, transformer=transformer, scheduler=scheduler
+            vae=vae, transformer=transformer, scheduler=scheduler
         )
         self.vae_scale_factor_spatial = (
             2 ** (len(self.vae.config.block_out_channels) - 1) if hasattr(self, "vae") and self.vae is not None else 8
@@ -154,138 +153,14 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         )
 
         self.video_processor = VideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
-    
-
-
-    def _get_t5_prompt_embeds(
-        self,
-        prompt: Union[str, List[str]] = None,
-        num_videos_per_prompt: int = 1,
-        max_sequence_length: int = 226,
-        device: Optional[torch.device] = None,
-        dtype: Optional[torch.dtype] = None,
-    ):
-        device = device or self._execution_device
-        dtype = dtype or self.text_encoder.dtype
-
-        prompt = [prompt] if isinstance(prompt, str) else prompt
-        batch_size = len(prompt)
-
-        text_inputs = self.tokenizer(
-            prompt,
-            padding="max_length",
-            max_length=max_sequence_length,
-            truncation=True,
-            add_special_tokens=True,
-            return_tensors="pt",
-        )
-        text_input_ids = text_inputs.input_ids
-        untruncated_ids = self.tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
-
-        if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(text_input_ids, untruncated_ids):
-            removed_text = self.tokenizer.batch_decode(untruncated_ids[:, max_sequence_length - 1 : -1])
-            logger.warning(
-                "The following part of your input was truncated because `max_sequence_length` is set to "
-                f" {max_sequence_length} tokens: {removed_text}"
-            )
-
-        prompt_embeds = self.text_encoder(text_input_ids.to(device))[0]
-        prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
-
-        # duplicate text embeddings for each generation per prompt, using mps friendly method
-        _, seq_len, _ = prompt_embeds.shape
-        prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
-        prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
-
-        return prompt_embeds
-
-    def encode_prompt(
-        self,
-        prompt: Union[str, List[str]],
-        negative_prompt: Optional[Union[str, List[str]]] = None,
-        do_classifier_free_guidance: bool = True,
-        num_videos_per_prompt: int = 1,
-        prompt_embeds: Optional[torch.Tensor] = None,
-        negative_prompt_embeds: Optional[torch.Tensor] = None,
-        max_sequence_length: int = 226,
-        device: Optional[torch.device] = None,
-        dtype: Optional[torch.dtype] = None,
-    ):
-        r"""
-        Encodes the prompt into text encoder hidden states.
-
-        Args:
-            prompt (`str` or `List[str]`, *optional*):
-                prompt to be encoded
-            negative_prompt (`str` or `List[str]`, *optional*):
-                The prompt or prompts not to guide the image generation. If not defined, one has to pass
-                `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is
-                less than `1`).
-            do_classifier_free_guidance (`bool`, *optional*, defaults to `True`):
-                Whether to use classifier free guidance or not.
-            num_videos_per_prompt (`int`, *optional*, defaults to 1):
-                Number of videos that should be generated per prompt. torch device to place the resulting embeddings on
-            prompt_embeds (`torch.Tensor`, *optional*):
-                Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
-                provided, text embeddings will be generated from `prompt` input argument.
-            negative_prompt_embeds (`torch.Tensor`, *optional*):
-                Pre-generated negative text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt
-                weighting. If not provided, negative_prompt_embeds will be generated from `negative_prompt` input
-                argument.
-            device: (`torch.device`, *optional*):
-                torch device
-            dtype: (`torch.dtype`, *optional*):
-                torch dtype
-        """
-        device = device or self._execution_device
-
-        prompt = [prompt] if isinstance(prompt, str) else prompt
-        if prompt is not None:
-            batch_size = len(prompt)
-        else:
-            batch_size = prompt_embeds.shape[0]
-
-        if prompt_embeds is None:
-            prompt_embeds = self._get_t5_prompt_embeds(
-                prompt=prompt,
-                num_videos_per_prompt=num_videos_per_prompt,
-                max_sequence_length=max_sequence_length,
-                device=device,
-                dtype=dtype,
-            )
-
-        if do_classifier_free_guidance and negative_prompt_embeds is None:
-            negative_prompt = negative_prompt or ""
-            negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
-
-            if prompt is not None and type(prompt) is not type(negative_prompt):
-                raise TypeError(
-                    f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
-                    f" {type(prompt)}."
-                )
-            elif batch_size != len(negative_prompt):
-                raise ValueError(
-                    f"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:"
-                    f" {prompt} has batch size {batch_size}. Please make sure that passed `negative_prompt` matches"
-                    " the batch size of `prompt`."
-                )
-
-            negative_prompt_embeds = self._get_t5_prompt_embeds(
-                prompt=negative_prompt,
-                num_videos_per_prompt=num_videos_per_prompt,
-                max_sequence_length=max_sequence_length,
-                device=device,
-                dtype=dtype,
-            )
-
-        return prompt_embeds, negative_prompt_embeds
 
     def prepare_latents(
         self, batch_size, num_channels_latents, num_frames, height, width, dtype, device, generator, latents=None
     ):
         shape = (
             batch_size,
-            (num_frames - 1) // self.vae_scale_factor_temporal + 1,
+            # num_frames // self.vae_scale_factor_temporal, or this
+            (num_frames - 1) // self.vae_scale_factor_temporal + 1, # (num_frames - 1) // self.vae_scale_factor_temporal + 1,
             num_channels_latents,
             height // self.vae_scale_factor_spatial,
             width // self.vae_scale_factor_spatial,
@@ -329,58 +204,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         if accepts_generator:
             extra_step_kwargs["generator"] = generator
         return extra_step_kwargs
-
-    # Copied from diffusers.pipelines.latte.pipeline_latte.LattePipeline.check_inputs
-    def check_inputs(
-        self,
-        prompt,
-        height,
-        width,
-        negative_prompt,
-        callback_on_step_end_tensor_inputs,
-        prompt_embeds=None,
-        negative_prompt_embeds=None,
-    ):
-        if height % 8 != 0 or width % 8 != 0:
-            raise ValueError(f"`height` and `width` have to be divisible by 8 but are {height} and {width}.")
-
-        if callback_on_step_end_tensor_inputs is not None and not all(
-            k in self._callback_tensor_inputs for k in callback_on_step_end_tensor_inputs
-        ):
-            raise ValueError(
-                f"`callback_on_step_end_tensor_inputs` has to be in {self._callback_tensor_inputs}, but found {[k for k in callback_on_step_end_tensor_inputs if k not in self._callback_tensor_inputs]}"
-            )
-        if prompt is not None and prompt_embeds is not None:
-            raise ValueError(
-                f"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
-                " only forward one of the two."
-            )
-        elif prompt is None and prompt_embeds is None:
-            raise ValueError(
-                "Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined."
-            )
-        elif prompt is not None and (not isinstance(prompt, str) and not isinstance(prompt, list)):
-            raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
-
-        if prompt is not None and negative_prompt_embeds is not None:
-            raise ValueError(
-                f"Cannot forward both `prompt`: {prompt} and `negative_prompt_embeds`:"
-                f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
-            )
-
-        if negative_prompt is not None and negative_prompt_embeds is not None:
-            raise ValueError(
-                f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`:"
-                f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
-            )
-
-        if prompt_embeds is not None and negative_prompt_embeds is not None:
-            if prompt_embeds.shape != negative_prompt_embeds.shape:
-                raise ValueError(
-                    "`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but"
-                    f" got: `prompt_embeds` {prompt_embeds.shape} != `negative_prompt_embeds`"
-                    f" {negative_prompt_embeds.shape}."
-                )
+            
     def fuse_qkv_projections(self) -> None:
         r"""Enables fused QKV projections."""
         self.fusing_transformer = True
@@ -441,17 +265,19 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         self,
         prompt: Optional[Union[str, List[str]]] = None,
         negative_prompt: Optional[Union[str, List[str]]] = None,
-        height: int = 480,
-        width: int = 720,
-        num_frames: int = 49,
+        height: int = 256,
+        width: int = 256,
+        num_frames: int = 24,
         num_inference_steps: int = 50,
         timesteps: Optional[List[int]] = None,
-        guidance_scale: float = 6,
+        guidance_scale: float = 1,
         use_dynamic_cfg: bool = False,
         num_videos_per_prompt: int = 1,
         eta: float = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.FloatTensor] = None,
+        conditioning: Optional[List[torch.FloatTensor]] = None,
+        ref_latent: torch.FloatTensor = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
         output_type: str = "pil",
@@ -460,7 +286,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
-        max_sequence_length: int = 226,
+        max_sequence_length: int = 1,
     ) -> Union[CogVideoXPipelineOutput, Tuple]:
         if num_frames > 49:
             raise ValueError(
@@ -474,16 +300,6 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         width = width or self.transformer.config.sample_size * self.vae_scale_factor_spatial
         num_videos_per_prompt = 1
 
-        # 1. Check inputs. Raise error if not correct
-        self.check_inputs(
-            prompt,
-            height,
-            width,
-            negative_prompt,
-            callback_on_step_end_tensor_inputs,
-            prompt_embeds,
-            negative_prompt_embeds,
-        )
         self._guidance_scale = guidance_scale
         self._interrupt = False
 
@@ -493,7 +309,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         elif prompt is not None and isinstance(prompt, list):
             batch_size = len(prompt)
         else:
-            batch_size = prompt_embeds.shape[0]
+            batch_size = conditioning[-1].shape[0]
 
         device = self._execution_device
 
@@ -501,20 +317,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
-
-        # 3. Encode input prompt
-        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-            prompt,
-            negative_prompt,
-            do_classifier_free_guidance,
-            num_videos_per_prompt=num_videos_per_prompt,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            max_sequence_length=max_sequence_length,
-            device=device,
-        )
-        if do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+        assert not do_classifier_free_guidance  # not implemented yet
 
         # 4. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
@@ -528,13 +331,11 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
             num_frames,
             height,
             width,
-            prompt_embeds.dtype,
+            conditioning[-1].dtype,
             device,
             generator,
             latents,
         )
-
-
         
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -564,12 +365,14 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                 current_sampling_percent = i / len(timesteps)
 
                 latent_model_input = latent_model_input.to(dtype=self.transformer.dtype)
-                prompt_embeds = prompt_embeds.to(dtype=self.transformer.dtype)
-       
+                prompt_embeds = torch.zeros(batch_size, 1, 4096, dtype=self.transformer.dtype, device=self.transformer.device)
+
                 # predict noise model_output
                 noise_pred = self.transformer(
-                    hidden_states=latent_model_input,
+                    hidden_states=[ref_latent, latent_model_input],
                     encoder_hidden_states=prompt_embeds,
+                    condition=conditioning,
+                    sequence_infos=[None, torch.arange(latent_model_input.shape[1])],
                     timestep=timestep,
                     image_rotary_emb=image_rotary_emb,
                     return_dict=False,

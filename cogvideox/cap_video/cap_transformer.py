@@ -13,21 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from torch import nn
+import sys
+sys.path.append('.')
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import PeftAdapterMixin
-from diffusers.utils import USE_PEFT_BACKEND, is_torch_version, logging, scale_lora_layers, unscale_lora_layers
+from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
 from diffusers.utils.torch_utils import maybe_allow_in_graph
 from diffusers.models.attention import Attention, FeedForward
 from diffusers.models.attention_processor import AttentionProcessor, CogVideoXAttnProcessor2_0, FusedCogVideoXAttnProcessor2_0
-from diffusers.models.embeddings import CogVideoXPatchEmbed, TimestepEmbedding, Timesteps
+from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.normalization import AdaLayerNorm, CogVideoXLayerNormZero
+
+from diffusers.models.embeddings import CogVideoXPatchEmbed
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -120,8 +124,10 @@ class CogVideoXBlock(nn.Module):
         encoder_hidden_states: torch.Tensor,
         temb: torch.Tensor,
         image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        attention_kwargs: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
         text_seq_length = encoder_hidden_states.size(1)
+        attention_kwargs = attention_kwargs or {}
 
         # norm & modulate
         norm_hidden_states, norm_encoder_hidden_states, gate_msa, enc_gate_msa = self.norm1(
@@ -133,6 +139,7 @@ class CogVideoXBlock(nn.Module):
             hidden_states=norm_hidden_states,
             encoder_hidden_states=norm_encoder_hidden_states,
             image_rotary_emb=image_rotary_emb,
+            **attention_kwargs,
         )
 
         hidden_states = hidden_states + gate_msa * attn_hidden_states
@@ -152,8 +159,7 @@ class CogVideoXBlock(nn.Module):
 
         return hidden_states, encoder_hidden_states
 
-
-class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
+class CAPVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
     """
     A Transformer model for video-like data in [CogVideoX](https://github.com/THUDM/CogVideo).
 

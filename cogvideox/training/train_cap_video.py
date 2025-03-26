@@ -13,7 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import defaultdict
 import sys
+
+import einops
+sys.path.append('.')
 sys.path.append('..')
 import argparse
 import logging
@@ -36,24 +40,25 @@ from tqdm.auto import tqdm
 import numpy as np
 from decord import VideoReader
 from transformers import AutoTokenizer, T5EncoderModel, T5Tokenizer
+import cv2
 
 import diffusers
 from diffusers import AutoencoderKLCogVideoX, CogVideoXDPMScheduler
 from diffusers.models.embeddings import get_3d_rotary_pos_embed
 from diffusers.optimization import get_scheduler
 from diffusers.pipelines.cogvideo.pipeline_cogvideox import get_resize_crop_region_for_grid
+
+from diffusers.utils import check_min_version, export_to_video, is_wandb_available
+from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
+from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.training_utils import (
     cast_training_params,
     free_memory,
 )
-from diffusers.utils import check_min_version, export_to_video, is_wandb_available
-from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
-from diffusers.utils.torch_utils import is_compiled_module
-
-from controlnet_datasets import OpenvidControlnetDataset
-from controlnet_pipeline import ControlnetCogVideoXPipeline
-from cogvideo_transformer import CogVideoXTransformer3DModel
-from cogvideo_controlnet import CogVideoXControlnet
+from cap_video.cap_pipeline import CAPVideoPipeline
+from cap_video.cap_transformer import CAPVideoXTransformer3DModel
+from cap_video.cap_cond import CAPConditioning
+from training.controlnet_datasets import OpenvidControlnetDataset
 
 if is_wandb_available():
     import wandb
@@ -102,6 +107,7 @@ def get_args():
         required=True,
         help=("A path to csv."),
     )
+
     parser.add_argument(
         "--stride_min",
         type=int,
@@ -117,33 +123,27 @@ def get_args():
         help=("Maximum stride between frames."),
     )
     parser.add_argument(
-        "--hflip_p",
-        type=float,
-        default=0.5,
-        required=False,
-        help="Video horizontal flip probability.",
-    )
-
-    parser.add_argument(
         "--downscale_coef",
         type=int,
         default=8,
         required=False,
         help=("Downscale coef as encoder decreases resolutio before apply transformer."),
     )
-
-    parser.add_argument(
-        "--init_from_transformer",
-        action="store_true",
-        help="Whether or not load start controlnet parameters from transformer model.",
-    )
-
     parser.add_argument(
         "--dataloader_num_workers",
         type=int,
         default=0,
         help=(
             "Number of subprocesses to use for data loading. 0 means that the data will be loaded in the main process."
+        ),
+    )
+    # CAP4D
+    parser.add_argument(
+        "--use_text",
+        type=bool,
+        default=0,
+        help=(
+            "Use text embeddings."
         ),
     )
     # Validation
@@ -190,7 +190,7 @@ def get_args():
     parser.add_argument(
         "--guidance_scale",
         type=float,
-        default=6,
+        default=1,
         help="The guidance scale to use while sampling validation videos.",
     )
     parser.add_argument(
@@ -357,6 +357,8 @@ def get_args():
         help="Remove lr from the denominator of D estimate to avoid issues during warm-up stage.",
     )
 
+
+
     # Other information
     parser.add_argument("--tracker_name", type=str, default=None, help="Project tracker name")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
@@ -451,7 +453,6 @@ def log_validation(
     free_memory()
 
     return videos
-
 
 def _get_t5_prompt_embeds(
     tokenizer: T5Tokenizer,
@@ -666,9 +667,11 @@ def main(args):
         )
 
     logging_dir = Path(args.output_dir, args.logging_dir)
+    output_dir = Path(args.output_dir)
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
-    kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    # kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    kwargs = DistributedDataParallelKwargs()
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -715,32 +718,64 @@ def main(args):
             ).repo_id
 
     # Prepare models and scheduler
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="tokenizer", revision=args.revision
-    )
+    if args.use_text:
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="tokenizer", revision=args.revision
+        )
 
-    text_encoder = T5EncoderModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
-    )
+        text_encoder = T5EncoderModel.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
+        )
 
     # CogVideoX-2b weights are stored in float16
     # CogVideoX-5b and CogVideoX-5b-I2V weights are stored in bfloat16
     load_dtype = torch.bfloat16 if "5b" in args.pretrained_model_name_or_path.lower() else torch.float16
-    transformer = CogVideoXTransformer3DModel.from_pretrained(
+    transformer = CAPVideoXTransformer3DModel.from_pretrained(
         args.pretrained_model_name_or_path,
+        low_cpu_mem_usage=False,
+        device_map=None,
+        ignore_mismatched_sizes=True,
         subfolder="transformer",
         torch_dtype=load_dtype,
         revision=args.revision,
         variant=args.variant,
+        cond_in_channels=61,
+        sample_width=args.width // 8,
+        sample_height=args.height // 8,
+        # num_layers=10,
+        max_text_seq_length=1,
     )
+
+    #################################################################################################################
+    #################################################################################################################
+    ###### INITIALIZATION
+    #################################################################################################################
+    #################################################################################################################
+
+    # Dataset and DataLoader
+    train_dataset = OpenvidControlnetDataset(
+        video_root_dir=args.video_root_dir,
+        csv_path=args.csv_path,
+        image_size=(args.height, args.width), 
+        stride=(args.stride_min, args.stride_max),
+        sample_n_frames=args.max_num_frames,
+        hflip_p=False,
+    )
+    test_dataset = OpenvidControlnetDataset(
+        video_root_dir=args.video_root_dir,
+        csv_path=args.csv_path,
+        image_size=(args.height, args.width), 
+        stride=(args.stride_min, args.stride_max),
+        sample_n_frames=args.max_num_frames,
+        hflip_p=False,
+    )
+
+    conditioning = CAPConditioning(32)
 
     vae = AutoencoderKLCogVideoX.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
     )
-
-
-
-
+    
     scheduler = CogVideoXDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
 
     if args.enable_slicing:
@@ -749,9 +784,11 @@ def main(args):
         vae.enable_tiling()
 
     # We only train the additional adapter controlnet layers
-    text_encoder.requires_grad_(False)
+    if args.use_text:
+        text_encoder.requires_grad_(False)
     transformer.requires_grad_(True)
     vae.requires_grad_(False)
+    conditioning.requires_grad_(False)
 
     # For mixed precision training we cast all non-trainable weights (vae, text_encoder and transformer) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -780,9 +817,11 @@ def main(args):
             "Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead."
         )
 
-    text_encoder.to(accelerator.device, dtype=weight_dtype)
+    if args.use_text:
+        text_encoder.to(accelerator.device, dtype=weight_dtype)
     transformer.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
+    conditioning.to(accelerator.device, dtype=torch.float32)
 
     if args.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
@@ -803,9 +842,9 @@ def main(args):
         )
 
     # Make sure the trainable params are in float32.
-    if args.mixed_precision == "fp16":
+    # if args.mixed_precision == "fp16":
         # only upcast trainable parameters into fp32
-        cast_training_params([transformer], dtype=torch.float32)
+        # cast_training_params([controlnet], dtype=torch.float32)
 
     trainable_parameters = list(filter(lambda p: p.requires_grad, transformer.parameters()))
 
@@ -823,16 +862,6 @@ def main(args):
     )
 
     optimizer = get_optimizer(args, params_to_optimize, use_deepspeed=use_deepspeed_optimizer)
-
-    # Dataset and DataLoader
-    train_dataset = OpenvidControlnetDataset(
-        video_root_dir=args.video_root_dir,
-        csv_path=args.csv_path,
-        image_size=(args.height, args.width), 
-        stride=(args.stride_min, args.stride_max),
-        sample_n_frames=args.max_num_frames,
-        hflip_p=args.hflip_p,
-    )
         
     def encode_video(video):
         video = video.to(accelerator.device, dtype=vae.dtype)
@@ -841,13 +870,19 @@ def main(args):
         return latent_dist.permute(0, 2, 1, 3, 4).to(memory_format=torch.contiguous_format)
     
     def collate_fn(examples):
-        videos = [example["video"] for example in examples]
-        prompts = [example["caption"] for example in examples]
+        videos = [torch.tensor(example["video"]) for example in examples]
+        # prompts = [example["caption"] for example in examples]
+        prompts = ["a close up portrait video of a person talking, with a white background" for example in examples]
 
         videos = torch.stack(videos)
         videos = videos.to(memory_format=torch.contiguous_format).float()
+        videos = einops.rearrange(videos, 'b f h w c -> b f c h w')
 
+        ref_img, videos = videos.split([1, videos.shape[1] - 1], dim=1)
+
+     
         return {
+            "ref_img": ref_img,
             "videos": videos,
             "prompts": prompts,
         }
@@ -855,6 +890,13 @@ def main(args):
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=args.train_batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=args.dataloader_num_workers,
+    )
+    test_dataloader = DataLoader(
+        test_dataset,
+        batch_size=1,
         shuffle=True,
         collate_fn=collate_fn,
         num_workers=args.dataloader_num_workers,
@@ -940,19 +982,41 @@ def main(args):
             models_to_accumulate = [transformer]
 
             with accelerator.accumulate(models_to_accumulate):
+                # model_input = encode_video(batch["videos"]).to(dtype=weight_dtype)  # [B, F, C, H, W]
                 model_input = encode_video(batch["videos"]).to(dtype=weight_dtype)  # [B, F, C, H, W]
+                ref_input = encode_video(batch["ref_img"]).to(dtype=weight_dtype)
+                # print(ref_input.shape)
                 prompts = batch["prompts"]
+                out_cond = batch["hint"]
+                ref_cond = batch["ref_cond"]
+                for key in out_cond:
+                    out_cond[key] = out_cond[key].to(dtype=torch.float32, device=accelerator.device)
+                    ref_cond[key] = ref_cond[key].to(dtype=torch.float32, device=accelerator.device)
+                # for key in out_cond:
+                #     print("out_cond", key, out_cond[key].shape)
+                out_cond = conditioning(out_cond)
+                # for key in ref_cond:
+                #     print("ref_cond", key, ref_cond[key].shape)
+                ref_cond = conditioning(ref_cond)
+                cond_tensor = einops.rearrange(out_cond["condition"], 'b f h w c -> b f c h w').to(device=accelerator.device)
+                cond_tensor = cond_tensor.to(dtype=weight_dtype)
+                ref_cond_tensor = einops.rearrange(ref_cond["condition"], 'b f h w c -> b f c h w').to(device=accelerator.device)
+                ref_cond_tensor = ref_cond_tensor.to(dtype=weight_dtype)
+                # print("out_cond", cond_tensor.shape)
+                # print("ref_cond", ref_cond_tensor.shape)
                 
                 # encode prompts
-                prompt_embeds = compute_prompt_embeddings(
-                    tokenizer,
-                    text_encoder,
-                    prompts,
-                    model_config.max_text_seq_length,
-                    accelerator.device,
-                    weight_dtype,
-                    requires_grad=False,
-                )
+                if args.use_text:
+                    prompt_embeds = compute_prompt_embeddings(
+                        tokenizer,
+                        text_encoder,
+                        prompts,
+                        model_config.max_text_seq_length,
+                        accelerator.device,
+                        weight_dtype,
+                        requires_grad=False,
+                    )
+                prompt_embeds = torch.zeros(model_input.shape[0], 1, 4096, dtype=weight_dtype, device=accelerator.device)
 
                 # Sample noise that will be added to the latents
                 noise = torch.randn_like(model_input)
@@ -978,22 +1042,30 @@ def main(args):
                     if model_config.use_rotary_positional_embeddings
                     else None
                 )
+                assert image_rotary_emb is None
+
+                sequence_infos = [None, torch.arange(0, cond_tensor.shape[1])]
 
                 # Add noise to the model input according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 noisy_model_input = scheduler.add_noise(model_input, noise, timesteps)
 
-      
+                # print("train cond", cond_tensor.shape, cond_tensor.min(), cond_tensor.max())
+                # print("latent", noisy_model_input.shape)
 
                 # Predict the noise residual
                 model_output = transformer(
-                    hidden_states=noisy_model_input,
+                    hidden_states=[ref_input, noisy_model_input],
                     encoder_hidden_states=prompt_embeds,
+                    condition=[ref_cond_tensor, cond_tensor],
+                    sequence_infos=sequence_infos,
                     timestep=timesteps,
                     image_rotary_emb=image_rotary_emb,
                     return_dict=False,
                 )[0]
+                # print("model_output", model_output.min(), model_output.max())
                 model_pred = scheduler.get_velocity(model_output, noisy_model_input, timesteps)
+
 
                 alphas_cumprod = scheduler.alphas_cumprod[timesteps]
                 weights = 1 / (1 - alphas_cumprod)
@@ -1035,31 +1107,52 @@ def main(args):
                 break
 
             if accelerator.is_main_process:
-                if global_step == 1 or args.validation_prompt is not None and (step + 1) % args.validation_steps == 0:
+                if (step + 1) % args.validation_steps == 0:
                     # Create pipeline
-                    pipe = ControlnetCogVideoXPipeline.from_pretrained(
+                    pipe = CAPVideoPipeline.from_pretrained(
                         args.pretrained_model_name_or_path,
                         transformer=unwrap_model(transformer),
-                        text_encoder=unwrap_model(text_encoder),
                         vae=unwrap_model(vae),
                         scheduler=scheduler,
                         torch_dtype=weight_dtype,
                     )
-    
-                    validation_prompts = args.validation_prompt.split(args.validation_prompt_separator)
-                    validation_videos = args.validation_video.split(args.validation_prompt_separator)
-                    for validation_prompt, validation_video in zip(validation_prompts, validation_videos):
-                        numpy_frames = read_video(validation_video, frames_count=args.max_num_frames)
+
+                    for test_id, test_batch in enumerate(test_dataloader):
+                        if test_id + 1 > args.num_validation_videos:
+                            break
+
+                        gt_vid = test_batch["videos"]
+                        ref_img = test_batch["ref_img"]
+                        ref_latent = encode_video(ref_img.to(dtype=vae.dtype, device=vae.device)).to(dtype=weight_dtype)
+
+                        out_cond = test_batch["hint"]
+                        ref_cond = test_batch["ref_cond"]
+                        for key in out_cond:
+                            out_cond[key] = out_cond[key].to(dtype=torch.float32, device=accelerator.device)
+                            ref_cond[key] = ref_cond[key].to(dtype=torch.float32, device=accelerator.device)
+                        out_cond = conditioning(out_cond)
+                        ref_cond = conditioning(ref_cond)
+                        cond_vis = conditioning.get_vis(out_cond["condition"])
+                        ref_vis = conditioning.get_vis(ref_cond["condition"])
+                        cond_tensor = einops.rearrange(out_cond["condition"], 'b f h w c -> b f c h w').to(device=accelerator.device)
+                        cond_tensor = cond_tensor.to(dtype=weight_dtype)
+                        ref_cond_tensor = einops.rearrange(ref_cond["condition"], 'b f h w c -> b f c h w').to(device=accelerator.device)
+                        ref_cond_tensor = ref_cond_tensor.to(dtype=weight_dtype)
+
                         pipeline_args = {
-                            "prompt": validation_prompt,
                             "guidance_scale": args.guidance_scale,
                             "use_dynamic_cfg": args.use_dynamic_cfg,
                             "height": args.height,
                             "width": args.width,
                             "num_frames": args.max_num_frames,
                             "num_inference_steps": args.num_inference_steps,
+                            "conditioning": [ref_cond_tensor, cond_tensor],
+                            "ref_latent": ref_latent,
                         }
+
+                        # print("val cond min max", cond_tensor.min(), cond_tensor.max())
     
+        
                         validation_outputs = log_validation(
                             pipe=pipe,
                             args=args,
@@ -1067,6 +1160,8 @@ def main(args):
                             pipeline_args=pipeline_args,
                             epoch=epoch,
                         )
+                        # run inference
+                        # save results
     
     accelerator.wait_for_everyone()
     accelerator.end_training()
