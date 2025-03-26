@@ -1,9 +1,9 @@
 #!/bin/bash
 
+#export MODEL_PATH="/datasets/sai/gencam/cogvideox/CogVideoX-5b-I2V/models--THUDM--CogVideoX-5b-I2V/snapshots/a6f0f4858a8395e7429d82493864ce92bf73af11"
 export MODEL_PATH="/datasets/sai/gencam/cogvideox/CogVideoX1.5-5B-I2V/models--THUDM--CogVideoX1.5-5B-I2V/snapshots/46c90528707aebbe69066390b4fe7e7d24c9c2a4"
-
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=0
 
 # if you are not using wth 8 gus, change `accelerate_config_machine_single.yaml` num_processes as your gpu number
 accelerate launch --config_file accelerate_config_machine_single.yaml --multi_gpu \
@@ -14,7 +14,7 @@ accelerate launch --config_file accelerate_config_machine_single.yaml --multi_gp
   --enable_tiling \
   --enable_slicing \
   --validation_prompt "car is going in the ocean, beautiful waves:::ship in the vulcano" \
-  --validation_video "../resources/car.mp4:::../resources/ship.mp4" \
+  --validation_video "../resources/car.mp4" \
   --validation_prompt_separator ::: \
   --num_inference_steps 28 \
   --num_validation_videos 1 \
@@ -22,10 +22,10 @@ accelerate launch --config_file accelerate_config_machine_single.yaml --multi_gp
   --seed 42 \
   --mixed_precision bf16 \
   --output_dir "cogvideox-controlnet" \
-  --height 512 \
-  --width 512 \
+  --height 480 \
+  --width 720 \
   --fps 8 \
-  --max_num_frames 3 \
+  --max_num_frames 49 \
   --video_root_dir "set-path-to-video-directory" \
   --csv_path "set-path-to-csv-file" \
   --stride_min 1 \
@@ -35,7 +35,7 @@ accelerate launch --config_file accelerate_config_machine_single.yaml --multi_gp
   --init_from_transformer \
   --train_batch_size 1 \
   --dataloader_num_workers 0 \
-  --num_train_epochs 1 \
+  --num_train_epochs 100 \
   --checkpointing_steps 1000 \
   --gradient_accumulation_steps 1 \
   --learning_rate 1e-5 \

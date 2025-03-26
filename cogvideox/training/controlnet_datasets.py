@@ -132,13 +132,13 @@ class OpenvidControlnetDataset(BaseClass):
         # self.df = pd.read_csv(csv_path)
         # self.df['checked'] = self.df['path'].map(lambda x: int(x in videos_names))
         # self.df = self.df[self.df['checked'] == True]
-        self.length = 10
+        self.length = 1000
         
     def get_batch(self, idx):
         #item = self.df.iloc[idx]
         caption = ""
         #video_name = item['path']
         #video_path = os.path.join(self.video_root_dir, video_name)
-        pixel_values = self.load_video_info("/datasets/sai/gencam/cogvideox/resources/car.mp4")[:,0:3]
+        pixel_values = self.load_video_info("/datasets/sai/gencam/cogvideox/resources/car.mp4")[:, :, :, :]
         print("IN DATALOADER", pixel_values.shape)
         return pixel_values, caption

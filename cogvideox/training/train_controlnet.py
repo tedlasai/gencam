@@ -54,7 +54,9 @@ from diffusers.utils.torch_utils import is_compiled_module
 from controlnet_datasets import OpenvidControlnetDataset
 from controlnet_img2vid_pipeline import CogVideoXImageToVideoPipeline
 
-from cogvideo_transformer import CustomCogVideoXTransformer3DModel
+#from cogvideo_transformer import CustomCogVideoXTransformer3DModel
+from diffusers.models import AutoencoderKLCogVideoX, CogVideoXTransformer3DModel
+from diffusers.utils import export_to_video, load_image
 
 if is_wandb_available():
     import wandb
@@ -727,7 +729,7 @@ def main(args):
     # CogVideoX-2b weights are stored in float16
     # CogVideoX-5b and CogVideoX-5b-I2V weights are stored in bfloat16
     load_dtype = torch.bfloat16 if "5b" in args.pretrained_model_name_or_path.lower() else torch.float16
-    transformer = CustomCogVideoXTransformer3DModel.from_pretrained(
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="transformer",
         torch_dtype=load_dtype,
@@ -755,7 +757,6 @@ def main(args):
 
     for name, param in transformer.named_parameters():
         if 'transformer_blocks.3' in name: #or 'conv_norm_out' in name or 'conv_out' in name or 'conv_in' in name or 'spatial_res_block' in name or 'up_block' in name:
-            print("Adding to trainable", name)
             param.requires_grad = True
         else:
             param.requires_grad = False
@@ -844,9 +845,9 @@ def main(args):
     def encode_video(video):
         video = video.to(accelerator.device, dtype=vae.dtype)
         video = video.permute(0, 2, 1, 3, 4)  # [B, C, F, H, W]
-        print("VIDEO", video.shape)
+        print("VIDEO SHAPE", video.shape)
         latent_dist = vae.encode(video).latent_dist.sample() * vae.config.scaling_factor
-        print("LATENT VIDEO", latent_dist.shape)
+        print("Latent dist shape", latent_dist.shape)
         return latent_dist.permute(0, 2, 1, 3, 4).to(memory_format=torch.contiguous_format)
     
     def collate_fn(examples):
@@ -950,7 +951,6 @@ def main(args):
             with accelerator.accumulate(models_to_accumulate):
                 latent = encode_video(batch["videos"]).to(dtype=weight_dtype)  # [B, F, C, H, W]
                 latent = latent.permute(0, 2, 1, 3, 4) # [B, C, F, H, W]
-                print("First latent", latent.shape)
                 prompts = batch["prompts"]
 
                 # encode prompts
@@ -963,15 +963,15 @@ def main(args):
                     weight_dtype,
                     requires_grad=False,
                 )
-
-                print("THE MISMATCH IS HERE")
                 
                 patch_size_t = transformer.config.patch_size_t
                 if patch_size_t is not None:
                     ncopy = latent.shape[2] % patch_size_t
                     # Copy the first frame ncopy times to match patch_size_t
                     first_frame = latent[:, :, :1, :, :]  # Get first frame [B, C, 1, H, W]
+                    print("ncopy", ncopy)
                     latent = torch.cat([first_frame.repeat(1, 1, ncopy, 1, 1), latent], dim=2)
+                    print("Patch size t is not None", latent.shape)
                     assert latent.shape[2] % patch_size_t == 0
 
                 batch_size, num_channels, num_frames, height, width = latent.shape
@@ -1001,12 +1001,9 @@ def main(args):
                 image_latents = image_latents.permute(0, 2, 1, 3, 4)
                 assert (latent.shape[0], *latent.shape[2:]) == (image_latents.shape[0], *image_latents.shape[2:])
 
-                print("1. latent", latent.shape)
-                print("1. image_latents", image_latents.shape)
                 # Padding image_latents to the same frame number as latent
                 padding_shape = (latent.shape[0], latent.shape[1] - 1, *latent.shape[2:])
                 latent_padding = image_latents.new_zeros(padding_shape)
-                print("latent_padding", latent_padding.shape)
                 image_latents = torch.cat([image_latents, latent_padding], dim=1)
 
 
@@ -1015,8 +1012,6 @@ def main(args):
                 noise = torch.randn_like(latent)
                 latent_noisy = scheduler.add_noise(latent, noise, timesteps)
 
-                print("latent_noisy", latent_noisy.shape)
-                print("image_latents", image_latents.shape)
                 # Concatenate latent and image_latents in the channel dimension
                 latent_img_noisy = torch.cat([latent_noisy, image_latents], dim=2)
 
@@ -1068,7 +1063,7 @@ def main(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 if accelerator.state.deepspeed_plugin is None:
-                    optimizer.step()
+                    #optimizer.step()
                     optimizer.zero_grad()
 
                 lr_scheduler.step()
@@ -1092,8 +1087,7 @@ def main(args):
                 break
 
             if accelerator.is_main_process:
-                print("HERE before validation")
-                if args.validation_prompt is not None and (step + 1) % args.validation_steps == 0:
+                if global_step == 1 or (args.validation_prompt is not None and (step + 1) % args.validation_steps == 0):
                     # Create pipeline
                     pipe = CogVideoXImageToVideoPipeline.from_pretrained(
                         args.pretrained_model_name_or_path,
@@ -1107,14 +1101,17 @@ def main(args):
                     validation_prompts = args.validation_prompt.split(args.validation_prompt_separator)
                     validation_videos = args.validation_video.split(args.validation_prompt_separator)
                     for validation_prompt, validation_video in zip(validation_prompts, validation_videos):
-                        numpy_frames = read_video(validation_video, frames_count=args.max_num_frames)
-                        in_frames_npy = np.stack([train_dataset.controlnet_processor(x) for x in numpy_frames])
-
+                        numpy_frames = read_video(validation_video, frames_count=args.max_num_frames) # [F, H, W, C]
+                        print("MAX NUM FRAMES", np.max(numpy_frames))
+                        print("MIN NUM FRAMES", np.min(numpy_frames))
+                        numpy_frames = numpy_frames.transpose(0, 3, 1, 2) /255.0# [F, C, H, W]
+                        numpy_frames = torch.from_numpy(numpy_frames).to(dtype=weight_dtype)
+                        image = load_image("https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/astronaut.jpg")
                         pipeline_args = {
-                            "prompt": validation_prompt,
-                            "in_frames": in_frames_npy,
-                            "guidance_scale": args.guidance_scale,
-                            "use_dynamic_cfg": args.use_dynamic_cfg,
+                            "prompt": "",
+                            "image": image,
+                            "guidance_scale": 6, #args.guidance_scale,
+                            "use_dynamic_cfg": True, #args.use_dynamic_cfg,
                             "height": args.height,
                             "width": args.width,
                             "num_frames": args.max_num_frames,
