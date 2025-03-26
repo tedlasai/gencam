@@ -1108,7 +1108,7 @@ def main(args):
                         numpy_frames = torch.from_numpy(numpy_frames).to(dtype=weight_dtype)
                         image = load_image("https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/astronaut.jpg")
                         pipeline_args = {
-                            "prompt": "",
+                            "prompt": "An astronaut hatching from an egg, on the surface of the moon, the darkness and depth of space realised in the background. High quality, ultrarealistic detail and breath-taking movie-like camera shot.",
                             "image": image,
                             "guidance_scale": 6, #args.guidance_scale,
                             "use_dynamic_cfg": True, #args.use_dynamic_cfg,
