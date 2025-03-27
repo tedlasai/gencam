@@ -1006,9 +1006,9 @@ def main(args):
                 loss = loss.mean()
                 accelerator.backward(loss)
 
-                if accelerator.sync_gradients:
-                    params_to_clip = transformer.parameters()
-                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                #if accelerator.sync_gradients:
+                    #params_to_clip = transformer.parameters()
+                    #accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 if accelerator.state.deepspeed_plugin is None:
                     optimizer.step()
@@ -1051,7 +1051,7 @@ def main(args):
                     for validation_prompt, validation_video in zip(validation_prompts, validation_videos):
                         numpy_frames = read_video(validation_video, frames_count=args.max_num_frames)
                         pipeline_args = {
-                            "prompt": validation_prompt,
+                            "prompt": "",
                             "guidance_scale": args.guidance_scale,
                             "use_dynamic_cfg": args.use_dynamic_cfg,
                             "height": args.height,

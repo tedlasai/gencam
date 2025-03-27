@@ -12,12 +12,12 @@ accelerate launch --config_file accelerate_config_machine_single.yaml --multi_gp
   --pretrained_model_name_or_path $MODEL_PATH \
   --enable_tiling \
   --enable_slicing \
-  --validation_prompt "car is going in the ocean, beautiful waves:::ship in the vulcano" \
+  --validation_prompt "" \
   --validation_video "../resources/car.mp4:::../resources/ship.mp4" \
   --validation_prompt_separator ::: \
   --num_inference_steps 28 \
   --num_validation_videos 1 \
-  --validation_steps 500 \
+  --validation_steps 100 \
   --seed 42 \
   --mixed_precision bf16 \
   --output_dir "cogvideox-controlnet" \
@@ -34,11 +34,11 @@ accelerate launch --config_file accelerate_config_machine_single.yaml --multi_gp
   --init_from_transformer \
   --train_batch_size 1 \
   --dataloader_num_workers 0 \
-  --num_train_epochs 1 \
-  --checkpointing_steps 1000 \
+  --num_train_epochs 100 \
+  --checkpointing_steps 100 \
   --gradient_accumulation_steps 1 \
-  --learning_rate 1e-5 \
-  --lr_scheduler cosine_with_restarts \
+  --learning_rate 1e-4 \
+  --lr_scheduler constant \
   --lr_warmup_steps 250 \
   --lr_num_cycles 1 \
   --enable_slicing \
