@@ -139,6 +139,10 @@ class OpenvidControlnetDataset(BaseClass):
         caption = ""
         #video_name = item['path']
         #video_path = os.path.join(self.video_root_dir, video_name)
-        pixel_values = self.load_video_info("/datasets/sai/gencam/cogvideox/resources/car.mp4")[:, :, :, :]
+        self.video_root_dir = "/datasets/sai/gencam/cogvideox/resources"
+        filenames = ["/datasets/sai/gencam/cogvideox/resources/car.mp4", "/datasets/sai/gencam/cogvideox/resources/ship.mp4"]
+        #randomly select a video
+        fi = random.choice(filenames)
+        pixel_values = self.load_video_info(fi)[:, :, :, :]
         print("IN DATALOADER", pixel_values.shape)
         return pixel_values, caption

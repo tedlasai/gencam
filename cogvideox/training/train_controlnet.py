@@ -981,7 +981,11 @@ def main(args):
 
                 # Add noise to the model input according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
+                original_model_input = model_input
                 noisy_model_input = scheduler.add_noise(model_input, noise, timesteps)
+
+                #replace first frame with the original frame
+                noisy_model_input[:, 0] = original_model_input[:, 0]
 
       
 
@@ -993,7 +997,12 @@ def main(args):
                     image_rotary_emb=image_rotary_emb,
                     return_dict=False,
                 )[0]
+                #oh this line below is also scaling the input which is bad - so the model is also learning to scale this input latent somehow
+                #thus, we need to replace the first frame with the original frame later
                 model_pred = scheduler.get_velocity(model_output, noisy_model_input, timesteps)
+
+                #replace first frame with the original frame
+                model_pred[:, 0] = original_model_input[:, 0]
 
                 alphas_cumprod = scheduler.alphas_cumprod[timesteps]
                 weights = 1 / (1 - alphas_cumprod)
@@ -1050,8 +1059,10 @@ def main(args):
                     validation_videos = args.validation_video.split(args.validation_prompt_separator)
                     for validation_prompt, validation_video in zip(validation_prompts, validation_videos):
                         numpy_frames = read_video(validation_video, frames_count=args.max_num_frames)
+                    
                         pipeline_args = {
                             "prompt": "",
+                            "image": numpy_frames[0:1],
                             "guidance_scale": args.guidance_scale,
                             "use_dynamic_cfg": args.use_dynamic_cfg,
                             "height": args.height,

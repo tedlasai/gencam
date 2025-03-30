@@ -2,7 +2,7 @@
 
 export MODEL_PATH="/datasets/sai/gencam/cogvideox/CogVideoX-2b/models--THUDM--CogVideoX-2b/snapshots/1137dacfc2c9c012bed6a0793f4ecf2ca8e7ba01"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=2
 
 # if you are not using wth 8 gus, change `accelerate_config_machine_single.yaml` num_processes as your gpu number
 accelerate launch --config_file accelerate_config_machine_single.yaml --multi_gpu \
@@ -21,8 +21,8 @@ accelerate launch --config_file accelerate_config_machine_single.yaml --multi_gp
   --seed 42 \
   --mixed_precision bf16 \
   --output_dir "cogvideox-controlnet" \
-  --height 512 \
-  --width 512 \
+  --height 480 \
+  --width 720 \
   --fps 8 \
   --max_num_frames 25 \
   --video_root_dir "set-path-to-video-directory" \

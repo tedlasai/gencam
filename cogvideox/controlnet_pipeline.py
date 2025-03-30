@@ -122,7 +122,19 @@ def retrieve_timesteps(
         timesteps = scheduler.timesteps
     return timesteps, num_inference_steps
     
-
+# Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.retrieve_latents
+def retrieve_latents(
+    encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"
+):
+    if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
+        return encoder_output.latent_dist.sample(generator)
+    elif hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
+        return encoder_output.latent_dist.mode()
+    elif hasattr(encoder_output, "latents"):
+        return encoder_output.latents
+    else:
+        raise AttributeError("Could not access latents of provided encoder_output")
+        
 class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
     _optional_components = []
     model_cpu_offload_seq = "text_encoder->transformer->vae"
@@ -305,6 +317,37 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         latents = latents * self.scheduler.init_noise_sigma
         return latents
 
+
+
+    def prepare_image_latents(self,
+        image: torch.Tensor,
+        batch_size: int = 1,
+        num_channels_latents: int = 16,
+        num_frames: int = 13,
+        height: int = 60,
+        width: int = 90,
+        dtype: Optional[torch.dtype] = None,
+        device: Optional[torch.device] = None,
+        generator: Optional[torch.Generator] = None,
+        latents: Optional[torch.Tensor] = None,):
+
+        image_prepared = prepare_frames(image, (height, width)).to(device).to(dtype=dtype).permute(0, 2, 1, 3, 4)  # [B, C, F, H, W]
+
+        print("Image prepared shape: ", image_prepared.shape)
+        image_latents = [retrieve_latents(self.vae.encode(image_prepared), generator)]
+
+        image_latents = torch.cat(image_latents, dim=0).to(dtype).permute(0, 2, 1, 3, 4)  # [B, F, C, H, W]
+
+        #if not self.vae.config.invert_scale_latents:
+        image_latents = self.vae_scaling_factor_image * image_latents
+
+        # else:
+        #     # This is awkward but required because the CogVideoX team forgot to multiply the
+        #     # scaling factor during training :)
+        #     image_latents = 1 / self.vae_scaling_factor_image * image_latents
+    
+        return image_latents
+
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
         latents = latents.permute(0, 2, 1, 3, 4)  # [batch_size, num_channels, num_frames, height, width]
         latents = 1 / self.vae.config.scaling_factor * latents
@@ -439,6 +482,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
     @torch.no_grad()
     def __call__(
         self,
+        image,
         prompt: Optional[Union[str, List[str]]] = None,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         height: int = 480,
@@ -473,6 +517,9 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         height = height or self.transformer.config.sample_size * self.vae_scale_factor_spatial
         width = width or self.transformer.config.sample_size * self.vae_scale_factor_spatial
         num_videos_per_prompt = 1
+
+        self.vae_scaling_factor_image = self.vae.config.scaling_factor if getattr(self, "vae", None) else 0.7
+
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
@@ -534,8 +581,21 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
             latents,
         )
 
-
         
+
+        image_latents = self.prepare_image_latents(
+            image,
+            batch_size=batch_size,
+            num_channels_latents=latent_channels,
+            num_frames=num_frames,
+            height=height,
+            width=width,
+            dtype=prompt_embeds.dtype,
+            device=device,
+            generator=generator,
+        )
+
+
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
@@ -556,8 +616,15 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                 if self.interrupt:
                     continue
                 
+                print("Using classifier free guidance: ", do_classifier_free_guidance)
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+                #replace first latent with image_latents
+                print("Latent model input shape: ", latent_model_input.shape)
+                print("Image latents shape: ", image_latents.shape)
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                #replace first latent with image_latents and I don't want this input scaled as this is what the model saw exactly during train time
+                latent_model_input[:, 0:1] = image_latents[:, 0:1] 
+
                 
                 timestep = t.expand(latent_model_input.shape[0])
 
@@ -582,8 +649,8 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                         (1 - math.cos(math.pi * ((num_inference_steps - t.item()) / num_inference_steps) ** 5.0)) / 2
                     )
                 if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_cond - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 if not isinstance(self.scheduler, CogVideoXDPMScheduler):
@@ -602,6 +669,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
 
                 # call the callback, if provided
                 if callback_on_step_end is not None:
+                    print("Callback on step end")
                     callback_kwargs = {}
                     for k in callback_on_step_end_tensor_inputs:
                         callback_kwargs[k] = locals()[k]
@@ -614,6 +682,8 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
 
+        #after exiting replace the first latent with image_latents
+        latents[:, 0:1] = image_latents[:, 0:1]
         if not output_type == "latent":
             video = self.decode_latents(latents)
             video = self.video_processor.postprocess_video(video=video, output_type=output_type)
