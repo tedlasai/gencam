@@ -21,11 +21,11 @@ accelerate launch --config_file accelerate_config_machine_single.yaml --multi_gp
   --seed 42 \
   --mixed_precision bf16 \
   --output_dir "cogvideox-controlnet" \
-  --height 480 \
-  --width 720 \
+  --height 352 \
+  --width 640 \
   --fps 8 \
   --max_num_frames 25 \
-  --video_root_dir "set-path-to-video-directory" \
+  --video_root_dir "/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur" \
   --csv_path "set-path-to-csv-file" \
   --stride_min 1 \
   --stride_max 3 \

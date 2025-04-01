@@ -13,9 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import random
 import sys
+
 sys.path.append('..')
 import argparse
+from PIL import Image
 import logging
 import math
 import os
@@ -50,7 +53,7 @@ from diffusers.utils import check_min_version, export_to_video, is_wandb_availab
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.torch_utils import is_compiled_module
 
-from controlnet_datasets import OpenvidControlnetDataset
+from controlnet_datasets import AdobeMotionBlurDataset
 from controlnet_pipeline import ControlnetCogVideoXPipeline
 from cogvideo_transformer import CogVideoXTransformer3DModel
 from cogvideo_controlnet import CogVideoXControlnet
@@ -825,9 +828,9 @@ def main(args):
     optimizer = get_optimizer(args, params_to_optimize, use_deepspeed=use_deepspeed_optimizer)
 
     # Dataset and DataLoader
-    train_dataset = OpenvidControlnetDataset(
-        video_root_dir=args.video_root_dir,
-        csv_path=args.csv_path,
+    train_dataset = AdobeMotionBlurDataset(
+        data_dir=args.video_root_dir,
+        split = "train",
         image_size=(args.height, args.width), 
         stride=(args.stride_min, args.stride_max),
         sample_n_frames=args.max_num_frames,
@@ -837,19 +840,25 @@ def main(args):
     def encode_video(video):
         video = video.to(accelerator.device, dtype=vae.dtype)
         video = video.permute(0, 2, 1, 3, 4)  # [B, C, F, H, W]
+        print("Encoding video shape:", video.shape)
         latent_dist = vae.encode(video).latent_dist.sample() * vae.config.scaling_factor
         return latent_dist.permute(0, 2, 1, 3, 4).to(memory_format=torch.contiguous_format)
     
     def collate_fn(examples):
         videos = [example["video"] for example in examples]
         prompts = [example["caption"] for example in examples]
+        motion_blur_amount = [example["motion_blur_amount"] for example in examples]
 
         videos = torch.stack(videos)
         videos = videos.to(memory_format=torch.contiguous_format).float()
 
+        motion_blur_amount= torch.stack(motion_blur_amount)
+        motion_blur_amount = motion_blur_amount.to(memory_format=torch.contiguous_format).long()
+
         return {
             "videos": videos,
             "prompts": prompts,
+            "motion_blur_amount": motion_blur_amount,
         }
 
     train_dataloader = DataLoader(
@@ -942,7 +951,15 @@ def main(args):
             with accelerator.accumulate(models_to_accumulate):
                 model_input = encode_video(batch["videos"]).to(dtype=weight_dtype)  # [B, F, C, H, W]
                 prompts = batch["prompts"]
-                
+                motion_blur_amount = batch["motion_blur_amount"]
+
+                #do dropout (unconditional guidance)
+                conditional_guidance = random.random() >= 0 
+                unconditional_guidance = ~conditional_guidance  
+                if unconditional_guidance:
+                    prompts = ["no condition"] * len(prompts)
+                    print("Len prompts", len (prompts))
+
                 # encode prompts
                 prompt_embeds = compute_prompt_embeddings(
                     tokenizer,
@@ -985,7 +1002,9 @@ def main(args):
                 noisy_model_input = scheduler.add_noise(model_input, noise, timesteps)
 
                 #replace first frame with the original frame
-                noisy_model_input[:, 0] = original_model_input[:, 0]
+                print("Motion blur amount:", motion_blur_amount)
+                if conditional_guidance:
+                    noisy_model_input[:, motion_blur_amount] = original_model_input[:, motion_blur_amount]
 
       
 
@@ -1001,8 +1020,10 @@ def main(args):
                 #thus, we need to replace the first frame with the original frame later
                 model_pred = scheduler.get_velocity(model_output, noisy_model_input, timesteps)
 
+
                 #replace first frame with the original frame
-                model_pred[:, 0] = original_model_input[:, 0]
+                if conditional_guidance:
+                    model_pred[:, motion_blur_amount] = original_model_input[:, motion_blur_amount].float()
 
                 alphas_cumprod = scheduler.alphas_cumprod[timesteps]
                 weights = 1 / (1 - alphas_cumprod)
@@ -1059,10 +1080,16 @@ def main(args):
                     validation_videos = args.validation_video.split(args.validation_prompt_separator)
                     for validation_prompt, validation_video in zip(validation_prompts, validation_videos):
                         numpy_frames = read_video(validation_video, frames_count=args.max_num_frames)
+                        frame = Image.open("/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/GOPR9637a/00321_w09.png").convert("RGB")
+                        #add dimension to the frame
+                        frame = np.array(frame)
+                        frame = np.expand_dims(frame, axis=0)
                     
                         pipeline_args = {
-                            "prompt": "",
-                            "image": numpy_frames[0:1],
+                            "prompt": "4",
+                            "negative_prompt": "4",
+                            "image": frame,
+                            "motion_blur_amount": 4,
                             "guidance_scale": args.guidance_scale,
                             "use_dynamic_cfg": args.use_dynamic_cfg,
                             "height": args.height,

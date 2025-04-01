@@ -483,6 +483,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
     def __call__(
         self,
         image,
+        motion_blur_amount,
         prompt: Optional[Union[str, List[str]]] = None,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         height: int = 480,
@@ -550,6 +551,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
+        print("Prompt", prompt, "Negative prompt", negative_prompt)
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
             prompt,
             negative_prompt,
@@ -623,7 +625,9 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                 print("Image latents shape: ", image_latents.shape)
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
                 #replace first latent with image_latents and I don't want this input scaled as this is what the model saw exactly during train time
-                latent_model_input[:, 0:1] = image_latents[:, 0:1] 
+                latent_model_input[:, motion_blur_amount:motion_blur_amount+1] = image_latents[:, 0:1]
+
+                #modify the prompt embeds
 
                 
                 timestep = t.expand(latent_model_input.shape[0])
@@ -682,8 +686,8 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
 
-        #after exiting replace the first latent with image_latents
-        latents[:, 0:1] = image_latents[:, 0:1]
+        #after exiting replace the conditioning latent with image_latents
+        latents[:, motion_blur_amount:motion_blur_amount+1] = image_latents[:, 0:1]
         if not output_type == "latent":
             video = self.decode_latents(latents)
             video = self.video_processor.postprocess_video(video=video, output_type=output_type)

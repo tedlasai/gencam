@@ -52,16 +52,18 @@ controlnet_mapping = {
 class BaseClass(Dataset):
     def __init__(
             self, 
-            video_root_dir,
+            data_dir,
             image_size=(320, 512), 
             stride=(1, 2), 
             sample_n_frames=25,
             hflip_p=0.5,
             controlnet_type='canny',
+            *args,
+            **kwargs
         ):
         self.height, self.width = unpack_mm_params(image_size)
         self.stride_min, self.stride_max = unpack_mm_params(stride)
-        self.video_root_dir = video_root_dir
+        self.data_dir = data_dir
         self.sample_n_frames = sample_n_frames
         self.hflip_p = hflip_p
         
@@ -85,6 +87,14 @@ class BaseClass(Dataset):
         pixel_values = torch.from_numpy(np_video).permute(0, 3, 1, 2).contiguous()
         pixel_values = pixel_values / 127.5 - 1
         return pixel_values
+    
+    def load_frames(self, frames):
+        video_length = frames.shape[1]
+        sample_stride = random.randint(self.stride_min, self.stride_max)
+        clip_length = min(video_length, (self.sample_n_frames - 1) * sample_stride + 1)
+        pixel_values = torch.from_numpy(frames).permute(0, 3, 1, 2).contiguous()
+        pixel_values = pixel_values / 127.5 - 1
+        return pixel_values
         
     def get_batch(self, idx):
         raise Exception('Get batch method is not realized.')
@@ -92,7 +102,7 @@ class BaseClass(Dataset):
     def __getitem__(self, idx):
         while True:
             try:
-                video, caption = self.get_batch(idx)
+                video, caption, motion_blur = self.get_batch(idx)
                 break
             except Exception as e:
                 print(e)
@@ -111,38 +121,79 @@ class BaseClass(Dataset):
         return data
 
 
-class CustomControlnetDataset(BaseClass):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.video_paths = glob.glob(os.path.join(self.video_root_dir, '*.mp4'))
-        self.length = len(self.video_paths)
+# class CustomControlnetDataset(BaseClass):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self.video_paths = glob.glob(os.path.join(self.video_root_dir, '*.mp4'))
+#         self.length = len(self.video_paths)
         
-    def get_batch(self, idx):
-        video_path = self.video_paths[idx]
-        caption = os.path.basename(video_path).replace('.mp4', '')
-        pixel_values, controlnet_video = self.load_video_info(video_path)
-        return pixel_values, caption, controlnet_video
+#     def get_batch(self, idx):
+#         video_path = self.video_paths[idx]
+#         caption = os.path.basename(video_path).replace('.mp4', '')
+#         pixel_values, controlnet_video = self.load_video_info(video_path)
+#         return pixel_values, caption, controlnet_video
 
 
-class OpenvidControlnetDataset(BaseClass):
-    def __init__(self, csv_path, *args, **kwargs):
+class AdobeMotionBlurDataset(BaseClass):
+    def __init__(self, split, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # videos_paths = glob.glob(os.path.join(self.video_root_dir, '*.mp4'))
         # videos_names = set([os.path.basename(x) for x in videos_paths])
         # self.df = pd.read_csv(csv_path)
         # self.df['checked'] = self.df['path'].map(lambda x: int(x in videos_names))
         # self.df = self.df[self.df['checked'] == True]
-        self.length = 1000
+        # self.data_dir = data_dir
+        self.split = split
         
-    def get_batch(self, idx):
-        #item = self.df.iloc[idx]
-        caption = ""
-        #video_name = item['path']
-        #video_path = os.path.join(self.video_root_dir, video_name)
-        self.video_root_dir = "/datasets/sai/gencam/cogvideox/resources"
-        filenames = ["/datasets/sai/gencam/cogvideox/resources/car.mp4", "/datasets/sai/gencam/cogvideox/resources/ship.mp4"]
-        #randomly select a video
-        fi = random.choice(filenames)
-        pixel_values = self.load_video_info(fi)[:, :, :, :]
-        print("IN DATALOADER", pixel_values.shape)
-        return pixel_values, caption
+        if self.split == 'train':
+            self.data_dir = os.path.join(self.data_dir, 'test_blur')
+        elif self.split == 'test':
+            self.data_dir = os.path.join(self.data_dir, 'test_blur')
+
+        
+        print("Data dir:", self.data_dir)
+        #read all images in the directory
+        self.image_paths = sorted(glob.glob(os.path.join(self.data_dir, '*/*.png')))
+
+
+        self.length = len(self.image_paths)
+        
+    def __getitem__(self, idx):
+
+        #get the image path
+        image_path = self.image_paths[idx]
+
+        # Extract directory and filename
+        directory = os.path.dirname(image_path)
+        filename = os.path.basename(image_path)
+
+        # Extract prefix (everything before the first underscore)
+        img_id = filename.split("_")[0]
+        motion_blur_amount = int(filename.split("_")[1][1:3])//2 #get first two letters
+
+
+        # Find all matching PNG files
+        matching_files = sorted(glob.glob(os.path.join(directory, f"{img_id}*.png")))
+        # Load the images into a video tensor
+        images = []
+        print("Matching files:", matching_files)
+        for i, file in enumerate(matching_files):
+            img = Image.open(file).convert("RGB")
+            #append image 4 times to the list
+            multiplier = 5 if i == len(matching_files) else 4
+            images.extend([np.array(img)] * multiplier)
+
+
+
+        images = np.array(images) #F*H*W*C
+
+        
+        pixel_values = self.load_frames(images)[:, :, :, :]
+        caption = f"{motion_blur_amount}"
+        motion_blur_amount = torch.tensor(motion_blur_amount)
+        data = {
+            'video': pixel_values, 
+            'caption': caption,
+            'motion_blur_amount': motion_blur_amount
+        }
+        return data
