@@ -793,8 +793,7 @@ def main(args):
                 if signal_recieved_time != 0:
                     if time.time() - signal_recieved_time > 60:
                         print("Signal received, saving state and exiting")
-                        #accelerator.save_state(save_path)
-                        
+                        accelerator.save_state(save_path)
                         signal_recieved_time = 0
                         exit(0)
 

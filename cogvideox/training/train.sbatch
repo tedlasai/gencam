@@ -7,7 +7,6 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --output=output/slurm-%j.out
 #SBATCH --error=error/slurm-%j.err
-#SBATCH --time=0:03:00
 
 # prepare your environment here
 source ~/.bashrc
@@ -33,11 +32,10 @@ handler()
     echo "Sending SIGUSR1 to accelerate PID: $accelerate_pid"
     python_id=$(ps --ppid $accelerate_pid -o pid=)
     kill -USR1 $python_id  # Send SIGUSR1 to the accelerate job
-    wait #this is important so my script can save out the checkpoint
   else
     echo "No accelerate PID found"
   fi
-  #sbatch ${BASH_SOURCE[0]} $config_file
+  sbatch ${BASH_SOURCE[0]} $config_file
 }
 
 # register signal handler
@@ -52,4 +50,7 @@ ps
 echo "Accelerate PID: $accelerate_pid"
 
 
-wait #this makes sure the handler in the slurm script is called when the job is done
+while true; do
+    echo "Waiting... (press Ctrl+C or send SIGUSR1 to stop)"
+    wait
+done
