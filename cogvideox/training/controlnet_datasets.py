@@ -147,13 +147,15 @@ class AdobeMotionBlurDataset(BaseClass):
         
         if self.split == 'train':
             self.data_dir = os.path.join(self.data_dir, 'test_blur')
-        elif self.split == 'test':
+        
+        elif self.split in ['val', 'test']:
             self.data_dir = os.path.join(self.data_dir, 'test_blur')
 
-        
-        print("Data dir:", self.data_dir)
-        #read all images in the directory
-        self.image_paths = sorted(glob.glob(os.path.join(self.data_dir, '*/*.png')))
+
+        self.image_paths = sorted(glob.glob(os.path.join(self.data_dir, '*/*_w09.png')))#only get files with _w9
+
+        if self.split == "val":
+            self.image_paths = ["/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/GOPR9637a/00321_w09.png"]
 
 
         self.length = len(self.image_paths)
@@ -171,29 +173,33 @@ class AdobeMotionBlurDataset(BaseClass):
         img_id = filename.split("_")[0]
         motion_blur_amount = int(filename.split("_")[1][1:3])//2 #get first two letters
 
+        sharp_directory = directory.replace('test_blur', 'full_sharp').replace('train_blur', 'full_sharp')
+        sharp_filename = os.path.join(sharp_directory, f"{img_id}.png")
 
-        # Find all matching PNG files
-        matching_files = sorted(glob.glob(os.path.join(directory, f"{img_id}*.png")))
-        # Load the images into a video tensor
+        sharp_image_start = int(img_id) - motion_blur_amount
+        sharp_image_end = int(img_id) + motion_blur_amount + 1
+
         images = []
-        print("Matching files:", matching_files)
-        for i, file in enumerate(matching_files):
-            img = Image.open(file).convert("RGB")
+        for i in range(sharp_image_start, sharp_image_end):
+            #convert to 5 digits
+            i_str = str(i).zfill(5)
+            current_sharp_image = os.path.join(sharp_directory, f"{str(i).zfill(5)}.png")
+            img = Image.open(current_sharp_image).convert("RGB")
             #append image 4 times to the list
-            multiplier = 5 if i == len(matching_files) else 4
-            images.extend([np.array(img)] * multiplier)
-
-
-
+            images.extend([np.array(img)] * (5 if i == sharp_image_start else 4))
+            
         images = np.array(images) #F*H*W*C
+
+        blur_img = np.array([Image.open(image_path).convert("RGB")])
+        blur_pixel_values = self.load_frames(blur_img)[:, :, :, :]
 
         
         pixel_values = self.load_frames(images)[:, :, :, :]
-        caption = f"{motion_blur_amount}"
         motion_blur_amount = torch.tensor(motion_blur_amount)
         data = {
+            'blur_img': blur_pixel_values,
             'video': pixel_values, 
-            'caption': caption,
+            'caption': "",
             'motion_blur_amount': motion_blur_amount
         }
         return data

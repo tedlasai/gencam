@@ -333,13 +333,16 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
 
         image_prepared = prepare_frames(image, (height, width)).to(device).to(dtype=dtype).permute(0, 2, 1, 3, 4)  # [B, C, F, H, W]
 
-        print("Image prepared shape: ", image_prepared.shape)
         image_latents = [retrieve_latents(self.vae.encode(image_prepared), generator)]
 
         image_latents = torch.cat(image_latents, dim=0).to(dtype).permute(0, 2, 1, 3, 4)  # [B, F, C, H, W]
 
-        #if not self.vae.config.invert_scale_latents:
-        image_latents = self.vae_scaling_factor_image * image_latents
+        if not self.vae.config.invert_scale_latents:
+            image_latents = self.vae_scaling_factor_image * image_latents
+        else:
+            # This is awkward but required because the CogVideoX team forgot to multiply the
+            # scaling factor during training :)
+            image_latents = 1 / self.vae_scaling_factor_image * image_latents
 
         # else:
         #     # This is awkward but required because the CogVideoX team forgot to multiply the
@@ -551,7 +554,6 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
-        print("Prompt", prompt, "Negative prompt", negative_prompt)
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
             prompt,
             negative_prompt,
@@ -618,14 +620,19 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                 if self.interrupt:
                     continue
                 
-                print("Using classifier free guidance: ", do_classifier_free_guidance)
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 #replace first latent with image_latents
-                print("Latent model input shape: ", latent_model_input.shape)
-                print("Image latents shape: ", image_latents.shape)
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
                 #replace first latent with image_latents and I don't want this input scaled as this is what the model saw exactly during train time
-                latent_model_input[:, motion_blur_amount:motion_blur_amount+1] = image_latents[:, 0:1]
+                #noise = torch.randn_like(latent_model_input[0, motion_blur_amount:motion_blur_amount+1])
+                #replace unconditional and conditional latents at motion blur location
+
+                #concatenate the image latents to the first latent
+                zeros_like_image_latents = torch.zeros_like(image_latents)
+                conditioning_latents = torch.cat([zeros_like_image_latents, image_latents], dim=0)
+                latent_model_input = torch.cat([conditioning_latents, latent_model_input], dim=1)
+                #latent_model_input[0, 0] = 0#self.scheduler.add_noise(image_latents[0, 0:1], noise, t)
+                #latent_model_input[1, 0] = image_latents[:, 0:1]
 
                 #modify the prompt embeds
 
@@ -656,6 +663,12 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                     noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_cond - noise_pred_uncond)
 
+                    #so I think the problem is that the conditional noise doesn't have a realistic noise prediction on its own frame
+                    #what I really need to do is replace the unconditional noise at that frame 
+
+
+                noise_pred = noise_pred[:, 1:]#remove first pred that belongs to conditioning
+
                 # compute the previous noisy sample x_t -> x_t-1
                 if not isinstance(self.scheduler, CogVideoXDPMScheduler):
                     latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
@@ -673,7 +686,6 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
 
                 # call the callback, if provided
                 if callback_on_step_end is not None:
-                    print("Callback on step end")
                     callback_kwargs = {}
                     for k in callback_on_step_end_tensor_inputs:
                         callback_kwargs[k] = locals()[k]
@@ -687,7 +699,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                     progress_bar.update()
 
         #after exiting replace the conditioning latent with image_latents
-        latents[:, motion_blur_amount:motion_blur_amount+1] = image_latents[:, 0:1]
+        #latents[:, motion_blur_amount:motion_blur_amount+1] = image_latents[:, 0:1]
         if not output_type == "latent":
             video = self.decode_latents(latents)
             video = self.video_processor.postprocess_video(video=video, output_type=output_type)
