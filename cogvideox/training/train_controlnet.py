@@ -106,6 +106,7 @@ def log_validation(
     accelerator,
     pipeline_args,
     epoch,
+    filenames,
     is_final_validation: bool = False,
 ):
     logger.info(
@@ -143,8 +144,9 @@ def log_validation(
             .replace('"', "_")
             .replace("/", "_")
         )
-        filename = os.path.join(args.output_dir, f"{epoch}_video_{i}_{prompt}.mp4")
-        export_to_video(video, filename, fps=8)
+        filename = os.path.join(args.output_dir, "deblurred", filenames[i])
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        export_to_video(video, filename, fps=20)
 
     free_memory()
 
@@ -537,7 +539,7 @@ def main(args):
 
     val_dataset = AdobeMotionBlurDataset(
         data_dir=os.path.join(args.base_dir, args.video_root_dir),
-        split = "val",
+        split = "val" if args.just_validate else "test",
         image_size=(args.height, args.width), 
         stride=(args.stride_min, args.stride_max),
         sample_n_frames=args.max_num_frames,
@@ -555,6 +557,7 @@ def main(args):
         videos = [example["video"] for example in examples]
         prompts = [example["caption"] for example in examples]
         motion_blur_amount = [example["motion_blur_amount"] for example in examples]
+        file_names = [example["file_name"] for example in examples]
 
 
         videos = torch.stack(videos)
@@ -567,6 +570,7 @@ def main(args):
         motion_blur_amount = motion_blur_amount.to(memory_format=torch.contiguous_format).long()
 
         return {
+            "file_names": file_names,
             "blur_img": blur_img,
             "videos": videos,
             "prompts": prompts,
@@ -796,6 +800,8 @@ def main(args):
                         accelerator.save_state(save_path)
                         signal_recieved_time = 0
                         exit(0)
+                    else:
+                        exit(0)
 
                 if accelerator.is_main_process:
                     if global_step % args.checkpointing_steps == 0:
@@ -830,7 +836,7 @@ def main(args):
                         # #add dimension to the frame
                         # frame = np.array(frame)
                         # frame = np.expand_dims(frame, axis=0)
-                        frame = (batch["blur_img"][0].permute(0,2,3,1).cpu().numpy() + 1)*127.5
+                        frame = ((batch["blur_img"][0].permute(0,2,3,1).cpu().numpy() + 1)*127.5).astype(np.uint8)
                         
                         print("frame shape", frame.shape)
                     
@@ -846,6 +852,30 @@ def main(args):
                             "num_frames": args.max_num_frames,
                             "num_inference_steps": args.num_inference_steps,
                         }
+
+                        #save the gt_video output
+                        gt_video = batch["videos"][0].permute(0,2,3,1).cpu().numpy()
+                        gt_video = ((gt_video + 1) * 127.5)/255
+                        filenames = batch['file_names']
+                        modified_filenames = []
+                        for file in filenames:
+                            print(file)
+                            modified_filenames.append(file.replace(".png", ".mp4"))
+                        print("Gt video", gt_video.shape)
+                        
+                        for file in modified_filenames:
+                             #create the directory if it does not exist
+                            gt_file_name = os.path.join(args.output_dir, "gt", modified_filenames[0])
+                            os.makedirs(os.path.dirname(gt_file_name), exist_ok=True)
+                            export_to_video(gt_video, gt_file_name, fps=20)
+                        
+                        for file in modified_filenames:
+                            #create the directory if it does not exist
+                            blurry_file_name = os.path.join(args.output_dir, "blurry", modified_filenames[0].replace(".mp4", ".png"))
+                            os.makedirs(os.path.dirname(blurry_file_name), exist_ok=True)
+                            #save the blurry image
+                            Image.fromarray(frame[0]).save(blurry_file_name)
+                            
     
                         validation_outputs = log_validation(
                             pipe=pipe,
@@ -853,7 +883,10 @@ def main(args):
                             accelerator=accelerator,
                             pipeline_args=pipeline_args,
                             epoch=epoch,
+                            filenames=modified_filenames,
                         )
+
+
                 if args.just_validate:
                     exit(0)
     accelerator.wait_for_everyone()

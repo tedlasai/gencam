@@ -155,7 +155,13 @@ class AdobeMotionBlurDataset(BaseClass):
         self.image_paths = sorted(glob.glob(os.path.join(self.data_dir, '*/*_w09.png')))#only get files with _w9
 
         if self.split == "val":
-            self.image_paths = ["/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/GOPR9637a/00321_w09.png"]
+            self.image_paths = ["/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/train_blur/IMG_0200/00249_w09.png",
+                                "/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/train_blur/IMG_0167/00017_w09.png",
+                                "/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/train_blur/720p_240fps_5/00249_w09.png",
+                                "/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/IMG_0015/00169_w09.png",
+                                "/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/GOPR9637a/00321_w09.png",
+                                "/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/IMG_0183/00505_w09.png",
+                                "/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/IMG_0179/00577_w09.png"]
 
 
         self.length = len(self.image_paths)
@@ -196,7 +202,12 @@ class AdobeMotionBlurDataset(BaseClass):
         
         pixel_values = self.load_frames(images)[:, :, :, :]
         motion_blur_amount = torch.tensor(motion_blur_amount)
+
+        #get last two parts of the path
+        file_name = os.path.join(*image_path.strip(os.sep).split(os.sep)[-2:])
+
         data = {
+            'file_name': file_name,
             'blur_img': blur_pixel_values,
             'video': pixel_values, 
             'caption': "",
