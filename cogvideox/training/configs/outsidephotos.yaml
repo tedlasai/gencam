@@ -1,7 +1,7 @@
 # === Required or overridden ===
 base_dir: "/datasets/sai/gencam"
 pretrained_model_name_or_path: "cogvideox/CogVideoX-2b/models--THUDM--CogVideoX-2b/snapshots/1137dacfc2c9c012bed6a0793f4ecf2ca8e7ba01"  # Replace with actual path or env var expansion
-video_root_dir: "Adobe_240fps_dataset/Adobe_240fps_blur"
+video_root_dir: "my_motion_blurred_images"
 csv_path: "set-path-to-csv-file"  # Replace with actual CSV path
 
 # === Data-related ===
@@ -12,7 +12,7 @@ downscale_coef: 8
 init_from_transformer: true
 dataloader_num_workers: 0
 val_split: "test"
-dataset: "adobe"
+dataset: "outsidephotos"
 
 # === Validation ===
 num_inference_steps: 28

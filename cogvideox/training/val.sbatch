@@ -1,14 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=train_deblur
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=4
-#SBATCH --qos=gpu4-8h
+#SBATCH --gpus-per-node=1
+#SBATCH --qos=scavenger
 #SBATCH --signal=B:USR1@600
 #SBATCH --cpus-per-task=24
 #SBATCH --output=output/slurm-%j.out
 #SBATCH --error=error/slurm-%j.err
-
-#the signal time needs to be larger than the sleep in the handler function
 
 # prepare your environment here
 source ~/.bashrc
@@ -38,7 +36,6 @@ handler()
   else
     echo "No accelerate PID found"
   fi
-  echo "Resubmitting job with config file: $config_file"
   sbatch ${BASH_SOURCE[0]} $config_file
 }
 
@@ -47,7 +44,7 @@ trap handler SIGUSR1
 
 echo "Starting job at $(date)"
 #python train_controlnet.py #--config $config_file #& wait
-accelerate launch --config_file accelerator_train_config.yaml --multi_gpu train_controlnet.py --config $config_file & 
+accelerate launch --config_file accelerator_val_config.yaml --multi_gpu train_controlnet.py --config $config_file & 
 accelerate_pid=$!
 
 wait

@@ -58,7 +58,7 @@ from diffusers.utils import check_min_version, export_to_video, is_wandb_availab
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.torch_utils import is_compiled_module
 
-from controlnet_datasets import AdobeMotionBlurDataset
+from controlnet_datasets import AdobeMotionBlurDataset, OutsidePhotosDataset
 from controlnet_pipeline import ControlnetCogVideoXPipeline
 from cogvideo_transformer import CogVideoXTransformer3DModel
 from cogvideo_controlnet import CogVideoXControlnet
@@ -106,7 +106,6 @@ def log_validation(
     accelerator,
     pipeline_args,
     epoch,
-    filenames,
     is_final_validation: bool = False,
 ):
     logger.info(
@@ -134,19 +133,6 @@ def log_validation(
     for _ in range(args.num_validation_videos):
         video = pipe(**pipeline_args, generator=generator, output_type="np").frames[0]
         videos.append(video)
-
-    for i, video in enumerate(videos):
-        prompt = (
-            pipeline_args["prompt"][:25]
-            .replace(" ", "_")
-            .replace(" ", "_")
-            .replace("'", "_")
-            .replace('"', "_")
-            .replace("/", "_")
-        )
-        filename = os.path.join(args.output_dir, "deblurred", filenames[i])
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
-        export_to_video(video, filename, fps=20)
 
     free_memory()
 
@@ -435,6 +421,7 @@ def main(args):
         torch_dtype=load_dtype,
         revision=args.revision,
         variant=args.variant,
+        low_cpu_mem_usage=False,
     )
 
     vae = AutoencoderKLCogVideoX.from_pretrained(
@@ -537,14 +524,26 @@ def main(args):
         hflip_p=args.hflip_p,
     )
 
-    val_dataset = AdobeMotionBlurDataset(
-        data_dir=os.path.join(args.base_dir, args.video_root_dir),
-        split = "val" if args.just_validate else "test",
-        image_size=(args.height, args.width), 
-        stride=(args.stride_min, args.stride_max),
-        sample_n_frames=args.max_num_frames,
-        hflip_p=args.hflip_p,
-    )
+    if args.dataset == "adobe":
+        val_dataset = AdobeMotionBlurDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = args.val_split,
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
+    elif args.dataset == "outsidephotos":
+        
+        val_dataset = OutsidePhotosDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
+        train_dataset = val_dataset #dummy dataset
+    
         
     def encode_video(video):
         video = video.to(accelerator.device, dtype=vae.dtype)
@@ -558,6 +557,8 @@ def main(args):
         prompts = [example["caption"] for example in examples]
         motion_blur_amount = [example["motion_blur_amount"] for example in examples]
         file_names = [example["file_name"] for example in examples]
+        input_intervals = [example["input_interval"] for example in examples]
+        output_intervals = [example["output_interval"] for example in examples]
 
 
         videos = torch.stack(videos)
@@ -569,12 +570,20 @@ def main(args):
         motion_blur_amount= torch.stack(motion_blur_amount)
         motion_blur_amount = motion_blur_amount.to(memory_format=torch.contiguous_format).long()
 
+        input_intervals = torch.stack(input_intervals)
+        input_intervals = input_intervals.to(memory_format=torch.contiguous_format).long()
+
+        output_intervals = torch.stack(output_intervals)
+        output_intervals = output_intervals.to(memory_format=torch.contiguous_format).long()
+
         return {
             "file_names": file_names,
             "blur_img": blur_img,
             "videos": videos,
             "prompts": prompts,
             "motion_blur_amount": motion_blur_amount,
+            "input_intervals": input_intervals,
+            "output_intervals": output_intervals,
         }
 
     train_dataloader = DataLoader(
@@ -587,7 +596,7 @@ def main(args):
 
     val_dataloader = DataLoader(
         val_dataset,
-        batch_size=args.train_batch_size,
+        batch_size=1,
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=args.dataloader_num_workers,
@@ -681,139 +690,140 @@ def main(args):
 
     for epoch in range(first_epoch, args.num_train_epochs):
         transformer.train()
-
         for step, batch in enumerate(train_dataloader):
-            models_to_accumulate = [transformer]
+            if not args.just_validate:
+                models_to_accumulate = [transformer]
+                with accelerator.accumulate(models_to_accumulate):
+                    model_input = encode_video(batch["videos"]).to(dtype=weight_dtype)  # [B, F, C, H, W]
+                    prompts = batch["prompts"]
+                    image_latent = encode_video(batch["blur_img"]).to(dtype=weight_dtype)  # [B, F, C, H, W]
+                    input_intervals = batch["input_intervals"]
+                    output_intervals = batch["output_intervals"] 
+                    
 
-            with accelerator.accumulate(models_to_accumulate):
-                model_input = encode_video(batch["videos"]).to(dtype=weight_dtype)  # [B, F, C, H, W]
-                prompts = batch["prompts"]
-                motion_blur_amount = batch["motion_blur_amount"]
-                image_latent = encode_video(batch["blur_img"]).to(dtype=weight_dtype)  # [B, F, C, H, W]
+                    #do dropout (unconditional guidance)
+                    conditional_guidance = random.random() >= 0.2
+                    unconditional_guidance = not conditional_guidance  
+                    if unconditional_guidance:
+                        prompts = [""] * len(prompts)
 
-                
-
-                #do dropout (unconditional guidance)
-                conditional_guidance = random.random() >= 0.2
-                unconditional_guidance = not conditional_guidance  
-                if unconditional_guidance:
-                    prompts = [""] * len(prompts)
-
-                # encode prompts
-                prompt_embeds = compute_prompt_embeddings(
-                    tokenizer,
-                    text_encoder,
-                    prompts,
-                    model_config.max_text_seq_length,
-                    accelerator.device,
-                    weight_dtype,
-                    requires_grad=False,
-                )
-
-                # Sample noise that will be added to the latents
-                noise = torch.randn_like(model_input)
-                batch_size, num_frames, num_channels, height, width = model_input.shape
-
-                # Sample a random timestep for each image
-                timesteps = torch.randint(
-                    0, scheduler.config.num_train_timesteps, (batch_size,), device=model_input.device
-                )
-                timesteps = timesteps.long()
-        
-                # Prepare rotary embeds
-                image_rotary_emb = (
-                    prepare_rotary_positional_embeddings(
-                        height=args.height,
-                        width=args.width,
-                        num_frames=num_frames,
-                        vae_scale_factor_spatial=vae_scale_factor_spatial,
-                        patch_size=model_config.patch_size,
-                        attention_head_dim=model_config.attention_head_dim,
-                        device=accelerator.device,
+                    # encode prompts
+                    prompt_embeds = compute_prompt_embeddings(
+                        tokenizer,
+                        text_encoder,
+                        prompts,
+                        model_config.max_text_seq_length,
+                        accelerator.device,
+                        weight_dtype,
+                        requires_grad=False,
                     )
-                    if model_config.use_rotary_positional_embeddings
-                    else None
-                )
 
-                # Add noise to the model input according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
-                noisy_model_input = scheduler.add_noise(model_input, noise, timesteps)
+                    # Sample noise that will be added to the latents
+                    noise = torch.randn_like(model_input)
+                    batch_size, num_frames, num_channels, height, width = model_input.shape
 
-                #replace first frame with the original frame
-                if conditional_guidance:
-                    #concatenate the image latent with the noisy model input
-                    noisy_model_input = torch.cat([image_latent, noisy_model_input], dim=1)
-                else:
-                    image_latent = image_latent * 0
-                    noisy_model_input = torch.cat([image_latent, noisy_model_input], dim=1)
-      
+                    # Sample a random timestep for each image
+                    timesteps = torch.randint(
+                        0, scheduler.config.num_train_timesteps, (batch_size,), device=model_input.device
+                    )
+                    timesteps = timesteps.long()
+            
+                    # Prepare rotary embeds
+                    image_rotary_emb = (
+                        prepare_rotary_positional_embeddings(
+                            height=args.height,
+                            width=args.width,
+                            num_frames=num_frames,
+                            vae_scale_factor_spatial=vae_scale_factor_spatial,
+                            patch_size=model_config.patch_size,
+                            attention_head_dim=model_config.attention_head_dim,
+                            device=accelerator.device,
+                        )
+                        if model_config.use_rotary_positional_embeddings
+                        else None
+                    )
 
-                # Predict the noise residual
-                model_output = transformer(
-                    hidden_states=noisy_model_input,
-                    encoder_hidden_states=prompt_embeds,
-                    timestep=timesteps,
-                    image_rotary_emb=image_rotary_emb,
-                    return_dict=False,
-                )[0]
-                #oh this line below is also scaling the input which is bad - so the model is also learning to scale this input latent somehow
-                #thus, we need to replace the first frame with the original frame later
-                model_pred = scheduler.get_velocity(model_output, noisy_model_input, timesteps)
+                    # Add noise to the model input according to the noise magnitude at each timestep
+                    # (this is the forward diffusion process)
+                    noisy_model_input = scheduler.add_noise(model_input, noise, timesteps)
+
+                    #replace first frame with the original frame
+                    if conditional_guidance:
+                        #concatenate the image latent with the noisy model input
+                        noisy_model_input = torch.cat([image_latent, noisy_model_input], dim=1)
+                    else:
+                        image_latent = image_latent * 0
+                        noisy_model_input = torch.cat([image_latent, noisy_model_input], dim=1)
+        
+
+                    # Predict the noise residual
+                    model_output = transformer(
+                        hidden_states=noisy_model_input,
+                        encoder_hidden_states=prompt_embeds,
+                        input_intervals=input_intervals,
+                        output_intervals=output_intervals,
+                        timestep=timesteps,
+                        image_rotary_emb=image_rotary_emb,
+                        return_dict=False,
+                    )[0]
+                    #oh this line below is also scaling the input which is bad - so the model is also learning to scale this input latent somehow
+                    #thus, we need to replace the first frame with the original frame later
+                    model_pred = scheduler.get_velocity(model_output, noisy_model_input, timesteps)
 
 
 
-                alphas_cumprod = scheduler.alphas_cumprod[timesteps]
-                weights = 1 / (1 - alphas_cumprod)
-                while len(weights.shape) < len(model_pred.shape):
-                    weights = weights.unsqueeze(-1)
+                    alphas_cumprod = scheduler.alphas_cumprod[timesteps]
+                    weights = 1 / (1 - alphas_cumprod)
+                    while len(weights.shape) < len(model_pred.shape):
+                        weights = weights.unsqueeze(-1)
 
-                target = model_input
+                    target = model_input
 
 
-                loss = torch.mean((weights * (model_pred[:, 1:] - target) ** 2).reshape(batch_size, -1), dim=1)
-                loss = loss.mean()
-                accelerator.backward(loss)
+                    loss = torch.mean((weights * (model_pred[:, 1:] - target) ** 2).reshape(batch_size, -1), dim=1)
+                    loss = loss.mean()
+                    accelerator.backward(loss)
 
-                #if accelerator.sync_gradients:
-                    #params_to_clip = transformer.parameters()
-                    #accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    #if accelerator.sync_gradients:
+                        #params_to_clip = transformer.parameters()
+                        #accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
-                if accelerator.state.deepspeed_plugin is None:
-                    optimizer.step()
-                    optimizer.zero_grad()
+                    if accelerator.state.deepspeed_plugin is None:
+                        optimizer.step()
+                        optimizer.zero_grad()
 
-                lr_scheduler.step()
-
-          
-            #wait for all processes to finish
-            accelerator.wait_for_everyone()
+                    lr_scheduler.step()
 
             
-            # Checks if the accelerator has performed an optimization step behind the scenes
-            if accelerator.sync_gradients:
-                progress_bar.update(1)
-                global_step += 1
+                    #wait for all processes to finish
+                    accelerator.wait_for_everyone()
 
-                if signal_recieved_time != 0:
-                    if time.time() - signal_recieved_time > 60:
-                        print("Signal received, saving state and exiting")
-                        accelerator.save_state(save_path)
-                        signal_recieved_time = 0
-                        exit(0)
-                    else:
-                        exit(0)
+                    
+                    # Checks if the accelerator has performed an optimization step behind the scenes
+                    if accelerator.sync_gradients:
+                        progress_bar.update(1)
+                        global_step += 1
 
-                if accelerator.is_main_process:
-                    if global_step % args.checkpointing_steps == 0:
-                        accelerator.save_state(save_path)
-                        logger.info(f"Saved state to {save_path}")
+                        if signal_recieved_time != 0:
+                            if time.time() - signal_recieved_time > 60:
+                                print("Signal received, saving state and exiting")
+                                accelerator.save_state(save_path)
+                                signal_recieved_time = 0
+                                exit(0)
+                            else:
+                                exit(0)
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
-            accelerator.log(logs, step=global_step)
+                        if accelerator.is_main_process:
+                            if global_step % args.checkpointing_steps == 0:
+                                accelerator.save_state(save_path)
+                                logger.info(f"Saved state to {save_path}")
 
-            if global_step >= args.max_train_steps:
-                break
+                    logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+                    progress_bar.set_postfix(**logs)
+                    accelerator.log(logs, step=global_step)
+
+                    if global_step >= args.max_train_steps:
+                        break
 
             if accelerator.is_main_process:
                 if step == 0 or args.validation_prompt is not None and (step + 1) % args.validation_steps == 0:
@@ -826,7 +836,7 @@ def main(args):
                         scheduler=scheduler,
                         torch_dtype=weight_dtype,
                     )
-    
+
                     # validation_prompts = args.validation_prompt.split(args.validation_prompt_separator)
                     # validation_videos = args.validation_video.split(args.validation_prompt_separator)
                     print("LEn of val_dataloader", len(val_dataloader))
@@ -844,6 +854,8 @@ def main(args):
                             "prompt": "",
                             "negative_prompt": "",
                             "image": frame,
+                            "input_intervals": batch["input_intervals"][0:1],
+                            "output_intervals": batch["output_intervals"][0:1],
                             "motion_blur_amount": 0,
                             "guidance_scale": args.guidance_scale,
                             "use_dynamic_cfg": args.use_dynamic_cfg,
@@ -853,21 +865,22 @@ def main(args):
                             "num_inference_steps": args.num_inference_steps,
                         }
 
-                        #save the gt_video output
-                        gt_video = batch["videos"][0].permute(0,2,3,1).cpu().numpy()
-                        gt_video = ((gt_video + 1) * 127.5)/255
-                        filenames = batch['file_names']
                         modified_filenames = []
+                        filenames = batch['file_names']
                         for file in filenames:
                             print(file)
-                            modified_filenames.append(file.replace(".png", ".mp4"))
-                        print("Gt video", gt_video.shape)
-                        
-                        for file in modified_filenames:
-                             #create the directory if it does not exist
-                            gt_file_name = os.path.join(args.output_dir, "gt", modified_filenames[0])
-                            os.makedirs(os.path.dirname(gt_file_name), exist_ok=True)
-                            export_to_video(gt_video, gt_file_name, fps=20)
+                            modified_filenames.append(os.path.splitext(file)[0] + ".mp4")
+
+                        #save the gt_video output
+                        if args.dataset == "adobe":
+                            gt_video = batch["videos"][0].permute(0,2,3,1).cpu().numpy()
+                            gt_video = ((gt_video + 1) * 127.5)/255
+                            
+                            for file in modified_filenames:
+                                #create the directory if it does not exist
+                                gt_file_name = os.path.join(args.output_dir, "gt", modified_filenames[0])
+                                os.makedirs(os.path.dirname(gt_file_name), exist_ok=True)
+                                export_to_video(gt_video, gt_file_name, fps=20)
                         
                         for file in modified_filenames:
                             #create the directory if it does not exist
@@ -876,19 +889,31 @@ def main(args):
                             #save the blurry image
                             Image.fromarray(frame[0]).save(blurry_file_name)
                             
-    
-                        validation_outputs = log_validation(
+
+                        videos = log_validation(
                             pipe=pipe,
                             args=args,
                             accelerator=accelerator,
                             pipeline_args=pipeline_args,
                             epoch=epoch,
-                            filenames=modified_filenames,
                         )
 
+                        for i, video in enumerate(videos):
+                            prompt = (
+                                pipeline_args["prompt"][:25]
+                                .replace(" ", "_")
+                                .replace(" ", "_")
+                                .replace("'", "_")
+                                .replace('"', "_")
+                                .replace("/", "_")
+                            )
+                            filename = os.path.join(args.output_dir, "deblurred", modified_filenames[0])
+                            os.makedirs(os.path.dirname(filename), exist_ok=True)
+                            export_to_video(video, filename, fps=20)
 
                 if args.just_validate:
                     exit(0)
+
     accelerator.wait_for_everyone()
     accelerator.end_training()
 

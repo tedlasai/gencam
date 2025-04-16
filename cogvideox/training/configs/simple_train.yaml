@@ -11,6 +11,8 @@ hflip_p: 0.5
 downscale_coef: 8
 init_from_transformer: true
 dataloader_num_workers: 0
+val_split: "val"
+dataset: "adobe"
 
 # === Validation ===
 num_inference_steps: 28
@@ -19,7 +21,7 @@ validation_video: "../resources/car.mp4:::../resources/ship.mp4"
 validation_prompt_separator: ":::"
 num_validation_videos: 1
 validation_steps: 100
-guidance_scale: 6.0
+guidance_scale: 1.5
 use_dynamic_cfg: false
 just_validate: false
 
@@ -30,7 +32,7 @@ output_dir: "cogvideox-controlnet"
 height: 352
 width: 640
 fps: 8
-max_num_frames: 37
+max_num_frames: 9
 train_batch_size: 4
 num_train_epochs: 100
 max_train_steps: null
