@@ -24,7 +24,8 @@ from diffusers.utils import USE_PEFT_BACKEND, is_torch_version, logging, scale_l
 from diffusers.utils.torch_utils import maybe_allow_in_graph
 from diffusers.models.attention import Attention, FeedForward
 from diffusers.models.attention_processor import AttentionProcessor, CogVideoXAttnProcessor2_0, FusedCogVideoXAttnProcessor2_0
-from diffusers.models.embeddings import CogVideoXPatchEmbed, TimestepEmbedding, Timesteps
+#from diffusers.models.embeddings import CogVideoXPatchEmbed, TimestepEmbedding, Timesteps
+from cogvideo_embeddings import CogVideoXPatchEmbedWBlur, TimestepEmbedding, Timesteps
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.normalization import AdaLayerNorm, CogVideoXLayerNormZero
@@ -254,7 +255,7 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
             )
 
         # 1. Patch embedding
-        self.patch_embed = CogVideoXPatchEmbed(
+        self.patch_embed = CogVideoXPatchEmbedWBlur(
             patch_size=patch_size,
             patch_size_t=patch_size_t,
             in_channels=in_channels,
@@ -277,6 +278,7 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
         self.time_proj = Timesteps(inner_dim, flip_sin_to_cos, freq_shift)
         self.time_embedding = TimestepEmbedding(inner_dim, time_embed_dim, timestep_activation_fn)
+        
 
         self.ofs_proj = None
         self.ofs_embedding = None
@@ -433,6 +435,8 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         hidden_states: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
         timestep: Union[int, float, torch.LongTensor],
+        input_intervals: Optional[torch.Tensor],
+        output_intervals: Optional[torch.Tensor],
         timestep_cond: Optional[torch.Tensor] = None,
         ofs: Optional[Union[int, float, torch.LongTensor]] = None,
         image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
@@ -473,7 +477,7 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
             emb = emb + ofs_emb
 
         # 2. Patch embedding
-        hidden_states = self.patch_embed(encoder_hidden_states, hidden_states)
+        hidden_states = self.patch_embed(encoder_hidden_states, hidden_states, input_intervals, output_intervals)
         hidden_states = self.embedding_dropout(hidden_states)
 
         text_seq_length = encoder_hidden_states.shape[1]

@@ -17,8 +17,6 @@ from diffusers import CogVideoXDDIMScheduler, CogVideoXDPMScheduler
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.pipelines.cogvideo.pipeline_cogvideox import CogVideoXPipelineOutput, CogVideoXLoraLoaderMixin
 
-from cogvideo_controlnet import CogVideoXControlnet
-
 
 def resize_for_crop(image, crop_h, crop_w):
     img_h, img_w = image.shape[-2:]
@@ -487,6 +485,8 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         self,
         image,
         motion_blur_amount,
+        input_intervals,
+        output_intervals,
         prompt: Optional[Union[str, List[str]]] = None,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         height: int = 480,
@@ -603,7 +603,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        # 8. Create rotary embeds if required
+        # 8. Create rotary embeds if required - THIS IS NOT USED 
         image_rotary_emb = (
             self._prepare_rotary_positional_embeddings(height, width, latents.size(1), device)
             if self.transformer.config.use_rotary_positional_embeddings
@@ -612,6 +612,8 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
 
         # 9. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
+
+        print("Latent shape: ", latents.shape)
         
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             # for DPM-solver++
@@ -649,6 +651,8 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                     hidden_states=latent_model_input,
                     encoder_hidden_states=prompt_embeds,
                     timestep=timestep,
+                    input_intervals=input_intervals.to(device),
+                    output_intervals=output_intervals.to(device),
                     image_rotary_emb=image_rotary_emb,
                     return_dict=False,
                 )[0]
