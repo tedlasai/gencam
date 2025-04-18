@@ -435,8 +435,7 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         hidden_states: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
         timestep: Union[int, float, torch.LongTensor],
-        input_intervals: Optional[torch.Tensor],
-        output_intervals: Optional[torch.Tensor],
+        intervals: Optional[torch.Tensor],
         timestep_cond: Optional[torch.Tensor] = None,
         ofs: Optional[Union[int, float, torch.LongTensor]] = None,
         image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
@@ -477,7 +476,7 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
             emb = emb + ofs_emb
 
         # 2. Patch embedding
-        hidden_states = self.patch_embed(encoder_hidden_states, hidden_states, input_intervals, output_intervals)
+        hidden_states = self.patch_embed(encoder_hidden_states, hidden_states, intervals)
         hidden_states = self.embedding_dropout(hidden_states)
 
         text_seq_length = encoder_hidden_states.shape[1]

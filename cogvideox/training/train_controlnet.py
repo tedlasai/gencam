@@ -62,6 +62,8 @@ from controlnet_datasets import AdobeMotionBlurDataset, OutsidePhotosDataset
 from controlnet_pipeline import ControlnetCogVideoXPipeline
 from cogvideo_transformer import CogVideoXTransformer3DModel
 from cogvideo_controlnet import CogVideoXControlnet
+from helpers import random_insert_latent_frame, transform_intervals
+
 if is_wandb_available():
     import wandb
 
@@ -686,132 +688,7 @@ def main(args):
 
 
 
-    def random_insert_latent_frame(
-        image_latent: torch.Tensor,
-        noisy_model_input: torch.Tensor,
-        input_intervals: torch.Tensor,
-        output_intervals: torch.Tensor
-    ):
-        """
-        Inserts latent frames into noisy input and concatenates flattened intervals with flags.
 
-        Args:
-            image_latent: [B, latent_count, C, H, W]
-            noisy_model_input: [B, F, C, H, W]
-            input_intervals: [B, N, frames_per_latent, L]
-            output_intervals: [B, M, frames_per_latent, L]
-
-        Behavior per-sample (50/50):
-        Mode A:
-            - Insert latent twice at sequence start.
-            - Pad input_intervals by repeating its last group once.
-            - Leave output_intervals unchanged.
-        Mode B:
-            - Insert latent once at start and repeat last noisy frame at end.
-            - Pad output_intervals by repeating its last group once.
-            - Leave input_intervals unchanged.
-
-        After padding, flattens each group from [frames_per_latent, L] to [frames_per_latent * L],
-        then appends a flag (1 for input groups, 0 for output groups).
-
-        Returns:
-            outputs: Tensor [B, F+2, C, H, W]
-            masks:   Tensor [B, F+2] bool mask of latent inserts
-            intervals: Tensor [B, N+M+4, frames_per_latent * L + 4]
-        """
-        B, F, C, H, W = noisy_model_input.shape
-        _, N, fpl, L = input_intervals.shape
-        _, M, _, _ = output_intervals.shape
-        device = noisy_model_input.device
-
-        new_F = F + 2
-        outputs = torch.empty((B, new_F, C, H, W), device=device)
-        masks = torch.zeros((B, new_F), dtype=torch.bool, device=device)
-        combined_groups = N + M + 1
-        feature_len = fpl * L
-        intervals = torch.empty((B, combined_groups, feature_len + 4), device=device, dtype=input_intervals.dtype)
-
-        for b in range(B):
-            latent = image_latent[b, 0]
-            frames = noisy_model_input[b]
-
-            if random.random() < 0.5:
-                # Mode A: two latent inserts at start
-                outputs[b, 0] = latent
-                outputs[b, 1] = latent
-                masks[b, :2] = True
-                outputs[b, 2:] = frames
-                # Pad input_intervals by repeating last group once
-                pad_group = input_intervals[b, -1:].clone()  # [1, fpl, L]
-                in_groups = torch.cat([input_intervals[b], pad_group], dim=0)  # [N+1, fpl, L]
-                out_groups = output_intervals[b]                              # [M,   fpl, L]
-                in_flag = 1
-                out_flag = 0
-            else:
-                # Mode B: one insert at start, repeat last frame at end
-                outputs[b, 0] = latent
-                masks[b, 0] = True
-                outputs[b, 1:new_F-1] = frames
-                outputs[b, new_F-1] = frames[-1]
-                in_groups = input_intervals[b]                                 # [N,   fpl, L]
-                pad_group = output_intervals[b, -1:].clone()                   # [1, fpl, L]
-                out_groups = torch.cat([output_intervals[b], pad_group], dim=0) # [M+1, fpl, L]
-                in_flag = 1
-                out_flag = 0
-
-            # Flatten and append flag per group
-            # Process input groups
-            flat_in = in_groups.reshape(-1, feature_len)  # [(Ni), feature_len]
-            flags_in = torch.full((flat_in.size(0), 4), in_flag, device=device, dtype=input_intervals.dtype)
-            proc_in = torch.cat([flat_in, flags_in], dim=1)  # [(Ni), feature_len+4]
-
-            # Process output groups
-            flat_out = out_groups.reshape(-1, feature_len)  # [(Mo), feature_len]
-            flags_out = torch.full((flat_out.size(0), 4), out_flag, device=device, dtype=output_intervals.dtype)
-            proc_out = torch.cat([flat_out, flags_out], dim=1)  # [(Mo), feature_len+4]
-
-            # Concatenate processed groups
-            intervals[b] = torch.cat([proc_in, proc_out], dim=0)
-        return outputs, masks, intervals
-
-
-
-    def transform_intervals(
-        intervals: torch.Tensor,
-        frames_per_latent: int = 4,
-        repeat_first: bool = True
-    ) -> torch.Tensor:
-        """
-        Pad and reshape intervals into [B, num_latent_frames, frames_per_latent, L].
-
-        Args:
-            intervals: Tensor of shape [B, N, L]
-            frames_per_latent: number of frames per latent group (e.g., 4)
-            repeat_first: if True, pad at the beginning by repeating the first row; otherwise pad at the end by repeating the last row.
-
-        Returns:
-            Tensor of shape [B, num_latent_frames, frames_per_latent, L]
-        """
-        B, N, L = intervals.shape
-        num_latent = math.ceil(N / frames_per_latent)
-        target_N = num_latent * frames_per_latent
-        pad_count = target_N - N
-
-        if pad_count > 0:
-            # choose row to repeat
-            pad_row = intervals[:, :1, :] if repeat_first else intervals[:, -1:, :]
-            # replicate pad_row pad_count times
-            pad = pad_row.repeat(1, pad_count, 1)
-            # pad at beginning or end
-            if repeat_first:
-                expanded = torch.cat([pad, intervals], dim=1)
-            else:
-                expanded = torch.cat([intervals, pad], dim=1)
-        else:
-            expanded = intervals[:, :target_N, :]
-
-        # reshape into latent-frame groups
-        return expanded.view(B, num_latent, frames_per_latent, L)
 
     # For DeepSpeed training
     model_config = transformer.module.config if hasattr(transformer, "module") else transformer.config
@@ -878,7 +755,7 @@ def main(args):
                     input_intervals = transform_intervals(input_intervals, frames_per_latent=4)
                     output_intervals = transform_intervals(output_intervals, frames_per_latent=4)
                     #first interval is always rep
-                    noisy_model_input, condition_mask, intervals = random_insert_latent_frame(image_latent, noisy_model_input, input_intervals, output_intervals)
+                    noisy_model_input, target, condition_mask, intervals = random_insert_latent_frame(image_latent, noisy_model_input, model_input, input_intervals, output_intervals)
 
                     if not conditional_guidance:
                         #wherever the mask is True, we need to replace the latent with 0
@@ -889,7 +766,6 @@ def main(args):
                         hidden_states=noisy_model_input,
                         encoder_hidden_states=prompt_embeds,
                         intervals=intervals,
-                        condition_mask=condition_mask,
                         timestep=timesteps,
                         image_rotary_emb=image_rotary_emb,
                         return_dict=False,
@@ -907,7 +783,7 @@ def main(args):
 
 
 
-                    loss = torch.mean((weights * (model_pred[condition_mask] - target) ** 2).reshape(batch_size, -1), dim=1)
+                    loss = torch.mean((weights * (model_pred[~condition_mask] - target[~condition_mask]) ** 2).reshape(batch_size, -1), dim=1)
                     loss = loss.mean()
                     accelerator.backward(loss)
 

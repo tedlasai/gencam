@@ -669,7 +669,9 @@ class CogVideoXPatchEmbedWBlur(nn.Module):
         self.text_proj = nn.Linear(text_embed_dim, embed_dim)
 
         self.blur_sin_embed = 24
-        self.blur_proj = nn.Linear(8*self.blur_sin_embed , embed_dim)
+        self.frames_per_latent = 4
+        self.blur_embed_dim = self.frames_per_latent * 2  + 4 # 4 intervals, 2 values per interval + 4 for condition/not condition (cause embed_dim needs to be divisible by 4)
+        self.blur_proj = nn.Linear(self.blur_embed_dim*self.blur_sin_embed , embed_dim)
 
         if use_positional_embeddings or use_learned_positional_embeddings:
             persistent = use_learned_positional_embeddings
@@ -700,8 +702,35 @@ class CogVideoXPatchEmbedWBlur(nn.Module):
         joint_pos_embedding.data[:, self.max_text_seq_length :].copy_(pos_embedding)
 
         return joint_pos_embedding
+    
+    def _make_information_embedding(self, intervals: torch.Tensor) -> torch.Tensor:
+        """
+        Turn raw intervals into sinusoidal + linear-projected embeddings,
+        preserving the exact reshape, mask, and embed steps.
 
-    def forward(self, text_embeds: torch.Tensor, image_embeds: torch.Tensor, input_intervals: torch.Tensor, output_intervals:torch.Tensor) -> torch.Tensor:
+        Args:
+            intervals: Tensor of shape (B, num_latent_frames, information)
+
+        Returns:
+            Tensor of shape (B, num_latent_frames, 12*2*24, 1, 1)
+        """
+        info = intervals
+        # make it sinusoidal embedding
+        current_shape = info.shape
+        flat = info.reshape(-1)
+        sin_emb = get_1d_sincos_pos_embed_from_grid(
+            self.blur_sin_embed, flat, output_type="pt"
+        )
+        # back to (B, num_frames, 1+interval_len, embed_dim)
+        sin_emb = sin_emb.reshape(*current_shape, self.blur_sin_embed)
+        # collapse interval dims
+        sin_emb = sin_emb.reshape(sin_emb.shape[0], -1, self.blur_embed_dim * self.blur_sin_embed)
+
+        # linear projection + view to (B, num_frames, C, 1, 1)
+        proj = self.blur_proj(sin_emb.to(torch.float32))
+        return proj.view(*proj.shape, 1, 1)
+
+    def forward(self, text_embeds: torch.Tensor, image_embeds: torch.Tensor, intervals: torch.Tensor) -> torch.Tensor:
         r"""
         Args:
             text_embeds (`torch.Tensor`):
@@ -713,46 +742,14 @@ class CogVideoXPatchEmbedWBlur(nn.Module):
 
         batch_size, num_frames, channels, height, width = image_embeds.shape
 
-        #output_intervals.shape here is (4,3,4,2) - batch size, num frames, num intervals, 2
-        repeat_first_interval = output_intervals[:, 0:1, :].repeat(1, 3, 1)
-        output_intervals = torch.cat([repeat_first_interval, output_intervals], dim=1) 
-        output_intervals = output_intervals.reshape(output_intervals.shape[0], -1, 8)
-        #make it sinusodial embedding
-        current_shape = output_intervals.shape
-        output_intervals = get_1d_sincos_pos_embed_from_grid(24, output_intervals.reshape(-1), output_type="pt")
-        output_intervals = output_intervals.reshape(*current_shape, 24)
-        output_intervals = output_intervals.reshape(output_intervals.shape[0], -1, 8*self.blur_sin_embed)
-
-
-        output_interval_embedding = self.blur_proj(output_intervals.to(torch.float32))
-        output_interval_embedding = output_interval_embedding.view(*output_interval_embedding.shape,1,1)
-
-        #repeat four times
-        input_intervals = input_intervals.repeat(1, 4, 1)
-        input_intervals = input_intervals.reshape(input_intervals.shape[0], -1, 8)
-        #make it sinusodial embedding
-        current_shape = input_intervals.shape
-        input_intervals = get_1d_sincos_pos_embed_from_grid(24, input_intervals.reshape(-1), output_type="pt")
-        input_intervals = input_intervals.reshape(*current_shape, 24)
-        input_intervals = input_intervals.reshape(input_intervals.shape[0], -1, 8*self.blur_sin_embed)
-
-        #add to the image embeds here
-        input_interval_embedding = self.blur_proj(input_intervals.to(torch.float32))
-        input_interval_embedding = input_interval_embedding.view(*input_interval_embedding.shape,1,1)
-
-
-        #concatenate the two embeddings
-        interval_embeddings = torch.cat([input_interval_embedding, output_interval_embedding], dim=1)
-
-
-
+        information_embedding  = self._make_information_embedding(intervals)
 
         if self.patch_size_t is None:
             image_embeds = image_embeds.reshape(-1, channels, height, width)
             image_embeds = self.proj(image_embeds)
             image_embeds = image_embeds.view(batch_size, num_frames, *image_embeds.shape[1:])
 
-            image_embeds = image_embeds + interval_embeddings #add my blur embeddings here
+            image_embeds = image_embeds + information_embedding #add my blur embeddings here
 
             image_embeds = image_embeds.flatten(3).transpose(2, 3)  # [batch, num_frames, height x width, channels]
             image_embeds = image_embeds.flatten(1, 2)  # [batch, num_frames x height x width, channels]
