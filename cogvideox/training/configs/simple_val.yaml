@@ -28,7 +28,7 @@ use_dynamic_cfg: false
 # === Training ===
 seed: 42
 mixed_precision: "bf16"
-output_dir: "cogvideox-controlnet-swap"
+output_dir: "cogvideox-controlnet"
 height: 352
 width: 640
 fps: 8
@@ -63,7 +63,7 @@ prodigy_use_bias_correction: false
 prodigy_safeguard_warmup: false
 
 # === Logging & Reporting ===
-tracker_name: "cogvideox-controlnet-swap"
+tracker_name: "cogvideox-controlnet"
 push_to_hub: false
 hub_token: null
 hub_model_id: null
