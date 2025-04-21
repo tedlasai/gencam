@@ -62,6 +62,8 @@ from controlnet_datasets import AdobeMotionBlurDataset, OutsidePhotosDataset
 from controlnet_pipeline import ControlnetCogVideoXPipeline
 from cogvideo_transformer import CogVideoXTransformer3DModel
 from cogvideo_controlnet import CogVideoXControlnet
+from helpers import random_insert_latent_frame, transform_intervals
+
 if is_wandb_available():
     import wandb
 
@@ -684,9 +686,12 @@ def main(args):
     )
     vae_scale_factor_spatial = 2 ** (len(vae.config.block_out_channels) - 1)
 
+
+
+
+
     # For DeepSpeed training
     model_config = transformer.module.config if hasattr(transformer, "module") else transformer.config
-
 
     for epoch in range(first_epoch, args.num_train_epochs):
         transformer.train()
@@ -702,10 +707,21 @@ def main(args):
                     
 
                     #do dropout (unconditional guidance)
-                    conditional_guidance = random.random() >= 0.2
-                    unconditional_guidance = not conditional_guidance  
-                    if unconditional_guidance:
-                        prompts = [""] * len(prompts)
+                    # conditional_guidance = random.random() >= 0.2
+                    # unconditional_guidance = not conditional_guidance  
+                    # if unconditional_guidance:
+                    #     prompts = [""] * len(prompts)
+
+                    batch_size = len(prompts)
+                    # True = use real prompt (conditional); False = drop to empty (unconditional)
+                    guidance_mask = torch.rand(batch_size, device=accelerator.device) >= 0.2  
+
+                    # build a new prompts list: keep the original where mask True, else blank
+                    per_sample_prompts = [
+                        prompts[i] if guidance_mask[i] else ""
+                        for i in range(batch_size)
+                    ]
+                    prompts = per_sample_prompts
 
                     # encode prompts
                     prompt_embeds = compute_prompt_embeddings(
@@ -747,21 +763,21 @@ def main(args):
                     # (this is the forward diffusion process)
                     noisy_model_input = scheduler.add_noise(model_input, noise, timesteps)
 
-                    #replace first frame with the original frame
-                    if conditional_guidance:
-                        #concatenate the image latent with the noisy model input
-                        noisy_model_input = torch.cat([image_latent, noisy_model_input], dim=1)
-                    else:
-                        image_latent = image_latent * 0
-                        noisy_model_input = torch.cat([image_latent, noisy_model_input], dim=1)
-        
+                    input_intervals = transform_intervals(input_intervals, frames_per_latent=4)
+                    output_intervals = transform_intervals(output_intervals, frames_per_latent=4)
+                    #first interval is always rep
+                    noisy_model_input, target, condition_mask, intervals = random_insert_latent_frame(image_latent, noisy_model_input, model_input, input_intervals, output_intervals, special_info=args.special_info)
+                    
+                    for i in range(batch_size):
+                        if not guidance_mask[i]:
+                            noisy_model_input[i][condition_mask[i]] = 0
 
                     # Predict the noise residual
                     model_output = transformer(
                         hidden_states=noisy_model_input,
                         encoder_hidden_states=prompt_embeds,
-                        input_intervals=input_intervals,
-                        output_intervals=output_intervals,
+                        intervals=intervals,
+                        condition_mask=condition_mask,
                         timestep=timesteps,
                         image_rotary_emb=image_rotary_emb,
                         return_dict=False,
@@ -777,10 +793,9 @@ def main(args):
                     while len(weights.shape) < len(model_pred.shape):
                         weights = weights.unsqueeze(-1)
 
-                    target = model_input
 
 
-                    loss = torch.mean((weights * (model_pred[:, 1:] - target) ** 2).reshape(batch_size, -1), dim=1)
+                    loss = torch.mean((weights * (model_pred[~condition_mask] - target[~condition_mask]) ** 2).reshape(batch_size, -1), dim=1)
                     loss = loss.mean()
                     accelerator.backward(loss)
 
@@ -789,7 +804,7 @@ def main(args):
                         #accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     if accelerator.state.deepspeed_plugin is None:
-                        optimizer.step()
+                        #optimizer.step()
                         optimizer.zero_grad()
 
                     lr_scheduler.step()
@@ -847,7 +862,8 @@ def main(args):
                         # frame = np.array(frame)
                         # frame = np.expand_dims(frame, axis=0)
                         frame = ((batch["blur_img"][0].permute(0,2,3,1).cpu().numpy() + 1)*127.5).astype(np.uint8)
-                        
+
+
                         print("frame shape", frame.shape)
                     
                         pipeline_args = {
@@ -943,5 +959,4 @@ if __name__ == "__main__":
         time.sleep(1)
     
     #call main with args as a thread
-
 

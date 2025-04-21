@@ -16,7 +16,7 @@ from diffusers.models import AutoencoderKLCogVideoX, CogVideoXTransformer3DModel
 from diffusers import CogVideoXDDIMScheduler, CogVideoXDPMScheduler
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.pipelines.cogvideo.pipeline_cogvideox import CogVideoXPipelineOutput, CogVideoXLoraLoaderMixin
-
+from training.helpers import random_insert_latent_frame, transform_intervals
 
 def resize_for_crop(image, crop_h, crop_w):
     img_h, img_w = image.shape[-2:]
@@ -613,8 +613,16 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         # 9. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
 
-        print("Latent shape: ", latents.shape)
+
+        input_intervals = input_intervals.to(device)
+        output_intervals = output_intervals.to(device)
+
+        input_intervals = transform_intervals(input_intervals)
+        output_intervals = transform_intervals(output_intervals)
+
+        latents_initial, target, condition_mask, intervals = random_insert_latent_frame(image_latents, latents, latents, input_intervals, output_intervals, special_info="just_one")
         
+        latents = latents_initial.clone()
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             # for DPM-solver++
             old_pred_original_sample = None
@@ -625,20 +633,11 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 #replace first latent with image_latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-                #replace first latent with image_latents and I don't want this input scaled as this is what the model saw exactly during train time
-                #noise = torch.randn_like(latent_model_input[0, motion_blur_amount:motion_blur_amount+1])
-                #replace unconditional and conditional latents at motion blur location
-
-                #concatenate the image latents to the first latent
-                zeros_like_image_latents = torch.zeros_like(image_latents)
-                conditioning_latents = torch.cat([zeros_like_image_latents, image_latents], dim=0)
-                latent_model_input = torch.cat([conditioning_latents, latent_model_input], dim=1)
-                #latent_model_input[0, 0] = 0#self.scheduler.add_noise(image_latents[0, 0:1], noise, t)
-                #latent_model_input[1, 0] = image_latents[:, 0:1]
-
-                #modify the prompt embeds
-
                 
+                latent_model_input[0][condition_mask[0]] = 0 #set unconditioned latents to 0
+                #TODO: Replace the conditional latents with the input latents
+                latent_model_input[1][condition_mask[0]] = latents_initial[0][condition_mask[0]].to(latent_model_input.dtype)
+
                 timestep = t.expand(latent_model_input.shape[0])
 
                 current_sampling_percent = i / len(timesteps)
@@ -651,8 +650,8 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                     hidden_states=latent_model_input,
                     encoder_hidden_states=prompt_embeds,
                     timestep=timestep,
-                    input_intervals=input_intervals.to(device),
-                    output_intervals=output_intervals.to(device),
+                    intervals=intervals,
+                    condition_mask=condition_mask,
                     image_rotary_emb=image_rotary_emb,
                     return_dict=False,
                 )[0]
@@ -669,9 +668,6 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
 
                     #so I think the problem is that the conditional noise doesn't have a realistic noise prediction on its own frame
                     #what I really need to do is replace the unconditional noise at that frame 
-
-
-                noise_pred = noise_pred[:, 1:]#remove first pred that belongs to conditioning
 
                 # compute the previous noisy sample x_t -> x_t-1
                 if not isinstance(self.scheduler, CogVideoXDPMScheduler):
@@ -705,6 +701,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         #after exiting replace the conditioning latent with image_latents
         #latents[:, motion_blur_amount:motion_blur_amount+1] = image_latents[:, 0:1]
         if not output_type == "latent":
+            latents = latents[~condition_mask].unsqueeze(0) 
             video = self.decode_latents(latents)
             video = self.video_processor.postprocess_video(video=video, output_type=output_type)
         else:
