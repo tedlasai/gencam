@@ -24,6 +24,7 @@ num_validation_videos: 1
 validation_steps: 100
 guidance_scale: 1.1
 use_dynamic_cfg: false
+special_info: "just_one"
 
 # === Training ===
 seed: 42
