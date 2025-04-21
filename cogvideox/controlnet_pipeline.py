@@ -638,7 +638,6 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                 #TODO: Replace the conditional latents with the input latents
                 latent_model_input[1][condition_mask[0]] = latents_initial[0][condition_mask[0]].to(latent_model_input.dtype)
 
-                
                 timestep = t.expand(latent_model_input.shape[0])
 
                 current_sampling_percent = i / len(timesteps)
