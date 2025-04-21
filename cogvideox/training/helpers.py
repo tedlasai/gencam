@@ -6,7 +6,8 @@ def random_insert_latent_frame(
     noisy_model_input: torch.Tensor,
     target_latents: torch.Tensor,
     input_intervals: torch.Tensor,
-    output_intervals: torch.Tensor
+    output_intervals: torch.Tensor,
+    special_info
 ):
     """
     Inserts latent frames into noisy input, pads targets, and builds flattened intervals with flags.
@@ -47,7 +48,9 @@ def random_insert_latent_frame(
     masks = torch.zeros((B, new_F), dtype=torch.bool, device=device)
     combined_groups = N + M + 1
     feature_len = fpl * L
-    intervals = torch.empty((B, combined_groups, feature_len + 4), device=device,
+    # intervals = torch.empty((B, combined_groups, feature_len + 4), device=device,
+    #                         dtype=input_intervals.dtype)
+    intervals = torch.empty((B, combined_groups, feature_len), device=device,
                             dtype=input_intervals.dtype)
     new_targets = torch.empty((B, new_F, C, H, W), device=device,
                             dtype=target_latents.dtype)
@@ -57,24 +60,25 @@ def random_insert_latent_frame(
         frames = noisy_model_input[b]
         tgt = target_latents[b]
 
-        if random.random() < 0.5:
+        limit = 10 if special_info == "use_a" else 0.5
+        if random.random() < limit: #ALWAYS_MODE_A
             # Mode A: two latent inserts, zero-prefixed targets
             outputs[b, 0] = latent
             outputs[b, 1] = latent
             masks[b, :2] = True
             outputs[b, 2:] = frames
 
-            # pad targets: two zero-frames then original
-            zero = torch.zeros_like(tgt[0])
-            new_targets[b, 0] = zero
-            new_targets[b, 1] = zero
+            # pad targets: two large-numbers - these should be ignored
+            large_number = torch.ones_like(tgt[0])*10000
+            new_targets[b, 0] = large_number
+            new_targets[b, 1] = large_number
             new_targets[b, 2:] = tgt
 
             # pad intervals: input + replicated last input group
             pad_group = input_intervals[b, -1:].clone()
             in_groups = torch.cat([input_intervals[b], pad_group], dim=0)
             out_groups = output_intervals[b]
-            in_flag, out_flag = 1, 0
+            #in_flag, out_flag = 1, 0
         else:
             # Mode B: one latent insert & last-frame repeat, one-prefixed/appended targets
             outputs[b, 0] = latent
@@ -83,8 +87,8 @@ def random_insert_latent_frame(
             outputs[b, new_F-1] = frames[-1]
 
             # pad targets: one one-frame then original then last frame
-            one = torch.ones_like(tgt[0])
-            new_targets[b, 0] = one
+            zero = torch.zeros_like(tgt[0])
+            new_targets[b, 0] = zero
             new_targets[b, 1:new_F-1] = tgt
             new_targets[b, new_F-1] = tgt[-1]
 
@@ -92,18 +96,20 @@ def random_insert_latent_frame(
             in_groups = input_intervals[b]
             pad_group = output_intervals[b, -1:].clone()
             out_groups = torch.cat([output_intervals[b], pad_group], dim=0)
-            in_flag, out_flag = 1, 0
+            #in_flag, out_flag = 1, 0
 
         # flatten & flag groups
         flat_in = in_groups.reshape(-1, feature_len)
-        flags_in = torch.full((flat_in.size(0), 4), in_flag,
-                            device=device, dtype=input_intervals.dtype)
-        proc_in = torch.cat([flat_in, flags_in], dim=1)
+        # flags_in = torch.full((flat_in.size(0), 4), in_flag,
+        #                     device=device, dtype=input_intervals.dtype)
+        #proc_in = torch.cat([flat_in, flags_in], dim=1)
+        proc_in = torch.cat([flat_in], dim=1)
 
         flat_out = out_groups.reshape(-1, feature_len)
-        flags_out = torch.full((flat_out.size(0), 4), out_flag,
-                                device=device, dtype=output_intervals.dtype)
-        proc_out = torch.cat([flat_out, flags_out], dim=1)
+        # flags_out = torch.full((flat_out.size(0), 4), out_flag,
+        #                         device=device, dtype=output_intervals.dtype)
+        #proc_out = torch.cat([flat_out, flags_out], dim=1)
+        proc_out = torch.cat([flat_out], dim=1)
 
         intervals[b] = torch.cat([proc_in, proc_out], dim=0)
 

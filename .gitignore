@@ -8,4 +8,4 @@ cogvideox/CogVideoX-2b/
 my_motion_blurred_images/
 old_my_motion_blurred_images/
 cogvideox/training/cogvideox-controlnet-save
-cogvideox/training/cogvideox-controlnet-save*
+cogvideox/training/cogvideox-controlnet-*

@@ -707,10 +707,21 @@ def main(args):
                     
 
                     #do dropout (unconditional guidance)
-                    conditional_guidance = random.random() >= 0.2
-                    unconditional_guidance = not conditional_guidance  
-                    if unconditional_guidance:
-                        prompts = [""] * len(prompts)
+                    # conditional_guidance = random.random() >= 0.2
+                    # unconditional_guidance = not conditional_guidance  
+                    # if unconditional_guidance:
+                    #     prompts = [""] * len(prompts)
+
+                    batch_size = len(prompts)
+                    # True = use real prompt (conditional); False = drop to empty (unconditional)
+                    guidance_mask = torch.rand(batch_size, device=accelerator.device) >= 0.2  
+
+                    # build a new prompts list: keep the original where mask True, else blank
+                    per_sample_prompts = [
+                        prompts[i] if guidance_mask[i] else ""
+                        for i in range(batch_size)
+                    ]
+                    prompts = per_sample_prompts
 
                     # encode prompts
                     prompt_embeds = compute_prompt_embeddings(
@@ -755,17 +766,18 @@ def main(args):
                     input_intervals = transform_intervals(input_intervals, frames_per_latent=4)
                     output_intervals = transform_intervals(output_intervals, frames_per_latent=4)
                     #first interval is always rep
-                    noisy_model_input, target, condition_mask, intervals = random_insert_latent_frame(image_latent, noisy_model_input, model_input, input_intervals, output_intervals)
-
-                    if not conditional_guidance:
-                        #wherever the mask is True, we need to replace the latent with 0
-                        noisy_model_input[condition_mask] = 0
+                    noisy_model_input, target, condition_mask, intervals = random_insert_latent_frame(image_latent, noisy_model_input, model_input, input_intervals, output_intervals, special_info=args.special_info)
+                    
+                    for i in range(batch_size):
+                        if not guidance_mask[i]:
+                            noisy_model_input[i][condition_mask[i]] = 0
 
                     # Predict the noise residual
                     model_output = transformer(
                         hidden_states=noisy_model_input,
                         encoder_hidden_states=prompt_embeds,
                         intervals=intervals,
+                        condition_mask=condition_mask,
                         timestep=timesteps,
                         image_rotary_emb=image_rotary_emb,
                         return_dict=False,

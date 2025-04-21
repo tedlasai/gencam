@@ -177,7 +177,7 @@ class AdobeMotionBlurDataset(BaseClass):
         
         
         if self.split == 'train':
-            self.data_dir = os.path.join(self.data_dir, 'train_blur')
+            self.data_dir = os.path.join(self.data_dir, 'test_blur')
         
         elif self.split in ['val', 'test']:
             self.data_dir = os.path.join(self.data_dir, 'test_blur')

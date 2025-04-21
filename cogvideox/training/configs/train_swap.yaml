@@ -20,16 +20,16 @@ validation_prompt: ""
 validation_video: "../resources/car.mp4:::../resources/ship.mp4"
 validation_prompt_separator: ":::"
 num_validation_videos: 1
-validation_steps: 100
+validation_steps: 400
 guidance_scale: 1.5
 use_dynamic_cfg: false
 just_validate: false
-special_info: "use_a"
+special_info: "swap"
 
 # === Training ===
 seed: 42
 mixed_precision: "bf16"
-output_dir: "cogvideox-controlnet"
+output_dir: "cogvideox-controlnet-swap"
 height: 352
 width: 640
 fps: 8
@@ -37,9 +37,9 @@ max_num_frames: 9
 train_batch_size: 4
 num_train_epochs: 100
 max_train_steps: null
-checkpointing_steps: 100
+checkpointing_steps: 400
 checkpoints_total_limit: null
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 4
 gradient_checkpointing: true
 learning_rate: 0.0001
 scale_lr: false
@@ -64,7 +64,7 @@ prodigy_use_bias_correction: false
 prodigy_safeguard_warmup: false
 
 # === Logging & Reporting ===
-tracker_name: "cogvideox-controlnet"
+tracker_name: "cogvideox-controlnet-swap"
 push_to_hub: false
 hub_token: null
 hub_model_id: null

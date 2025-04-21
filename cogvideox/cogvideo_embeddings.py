@@ -670,8 +670,10 @@ class CogVideoXPatchEmbedWBlur(nn.Module):
 
         self.blur_sin_embed = 24
         self.frames_per_latent = 4
-        self.blur_embed_dim = self.frames_per_latent * 2  + 4 # 4 intervals, 2 values per interval + 4 for condition/not condition (cause embed_dim needs to be divisible by 4)
+        self.blur_embed_dim = self.frames_per_latent * 2  #+ 4 # 4 intervals, 2 values per interval + 4 for condition/not condition (cause embed_dim needs to be divisible by 4)
         self.blur_proj = nn.Linear(self.blur_embed_dim*self.blur_sin_embed , embed_dim)
+
+        self.blur_condition = nn.Parameter(torch.randn(2, self.embed_dim)*0.01)
 
         if use_positional_embeddings or use_learned_positional_embeddings:
             persistent = use_learned_positional_embeddings
@@ -730,7 +732,7 @@ class CogVideoXPatchEmbedWBlur(nn.Module):
         proj = self.blur_proj(sin_emb.to(torch.float32))
         return proj.view(*proj.shape, 1, 1)
 
-    def forward(self, text_embeds: torch.Tensor, image_embeds: torch.Tensor, intervals: torch.Tensor) -> torch.Tensor:
+    def forward(self, text_embeds: torch.Tensor, image_embeds: torch.Tensor, intervals: torch.Tensor, condition_mask: torch.Tensor) -> torch.Tensor:
         r"""
         Args:
             text_embeds (`torch.Tensor`):
@@ -744,12 +746,21 @@ class CogVideoXPatchEmbedWBlur(nn.Module):
 
         information_embedding  = self._make_information_embedding(intervals)
 
+        mask = condition_mask.unsqueeze(-1) 
+
+        condition_embedding = torch.where(
+            mask,
+            self.blur_condition[0],  # shape [embed_dim] → broadcast to [4,5,embed_dim]
+            self.blur_condition[1]   # shape [embed_dim] → broadcast to [4,5,embed_dim]
+        )
+        condition_embedding = condition_embedding.view(*condition_embedding.shape, 1, 1)
+
         if self.patch_size_t is None:
             image_embeds = image_embeds.reshape(-1, channels, height, width)
             image_embeds = self.proj(image_embeds)
             image_embeds = image_embeds.view(batch_size, num_frames, *image_embeds.shape[1:])
 
-            image_embeds = image_embeds + information_embedding #add my blur embeddings here
+            image_embeds = image_embeds + information_embedding + condition_embedding #add my blur embeddings here
 
             image_embeds = image_embeds.flatten(3).transpose(2, 3)  # [batch, num_frames, height x width, channels]
             image_embeds = image_embeds.flatten(1, 2)  # [batch, num_frames x height x width, channels]
