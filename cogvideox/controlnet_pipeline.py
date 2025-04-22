@@ -620,7 +620,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         input_intervals = transform_intervals(input_intervals)
         output_intervals = transform_intervals(output_intervals)
 
-        latents_initial, target, condition_mask, intervals = random_insert_latent_frame(image_latents, latents, latents, input_intervals, output_intervals, special_info="use_a")
+        latents_initial, target, condition_mask, intervals = random_insert_latent_frame(image_latents, latents, latents, input_intervals, output_intervals, special_info="just_one")
         
         latents = latents_initial.clone()
         with self.progress_bar(total=num_inference_steps) as progress_bar:
@@ -634,10 +634,13 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                 #replace first latent with image_latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
                 
-                latent_model_input[0][condition_mask[0]] = 0 #set unconditioned latents to 0
-                #TODO: Replace the conditional latents with the input latents
-                latent_model_input[1][condition_mask[0]] = latents_initial[0][condition_mask[0]].to(latent_model_input.dtype)
-
+                if do_classifier_free_guidance:
+                    latent_model_input[0][condition_mask[0]] = 0 #set unconditioned latents to 0
+                    #TODO: Replace the conditional latents with the input latents
+                    latent_model_input[1][condition_mask[0]] = latents_initial[0][condition_mask[0]].to(latent_model_input.dtype)
+                else:
+                    latent_model_input[:, condition_mask[0]] = latents_initial[0][condition_mask[0]].to(latent_model_input.dtype)
+        
                 timestep = t.expand(latent_model_input.shape[0])
 
                 current_sampling_percent = i / len(timesteps)
