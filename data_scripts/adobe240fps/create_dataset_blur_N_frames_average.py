@@ -26,6 +26,7 @@ parser.add_argument("--img_height", type=int, default=128, help="output image he
 parser.add_argument("--train_test_split", type=tuple, default=(90, 10), help="train test split for custom dataset")
 parser.add_argument("--window_size", type=int, default=7, help="number of frames to de average")
 parser.add_argument("--enable_train", default=0, type=int, help="generate train data or not")
+parser.add_argument("--extract_frames", default=0, type=int, help="extract frames or not")
 args = parser.parse_args()
 
 debug = False
@@ -68,7 +69,7 @@ def extract_frames(videos, inDir, outDir):
                 print("Error converting file:{}. Exiting.".format(video))
 
 
-def create_clips_overlap(video, root, destination, destionation_blur, listpath):
+def create_clips_overlap(video, root, destination, destionation_blur, listpath, window_size):
     """
     Distributes the images extracted by `extract_frames()` in
     clips containing 12 frames each.
@@ -99,44 +100,38 @@ def create_clips_overlap(video, root, destination, destionation_blur, listpath):
         n_length = len(images)
         window_middle = 16
         blurry_frame_idx = [16]
-        average_half_range = int((args.window_size - 1) / 2)
-        full_half_range = int((args.window_size - 1) / 2)
+        average_half_range = int((window_size - 1) / 2)
         window_middle_delta = 8
         window_total_num = math.floor(n_length/window_middle_delta) - 2
         num_blurry = 1
-
-        print("BLUR")
 
         for i in range(0, window_total_num):
 
             # create one folder for each outer window
             folderCounter += 1
 
-            mid_latent_list = range(blurry_frame_idx[0] - full_half_range, blurry_frame_idx[0] + full_half_range + 1)
-
             # average each blurry window to synthesize the blurry frame
             for j in range(0, num_blurry):
                 mid = blurry_frame_idx[j]
                 mid_list = range(mid - average_half_range, mid + average_half_range + 1)
-
-
                 sum = 0.0
 
                 for loc in mid_list:
-                    image_name = "{}".format(loc+1).zfill(5)+".png"
-                    sum = sum + imread(os.path.join(root, file, image_name)).astype("float32")
+                    image_name_read = "{}".format(loc+1).zfill(5)+".png"
+                    sum = sum + imread(os.path.join(root, file, image_name_read)).astype("float32")
                     if loc == mid:
-                        blur_image = image_name
-                        im_list.append(image_name)
+                        blur_image_out = "{}".format(loc+1).zfill(5)+"_w"+"{}".format(window_size).zfill(2)+".png"
+                        im_list.append(image_name_read)
 
 
                 sum = sum / float(len(mid_list))
                 sum = (sum*255).astype("uint8")
                 os.makedirs(os.path.join(destionation_blur, file), exist_ok=True)
-                imsave(os.path.join(destionation_blur, str(file), blur_image), sum)
+                print("File", file)
+                imsave(os.path.join(destionation_blur, str(file), blur_image_out), sum)
 
 
-
+            print("Window", window_middle, "window middle delta", window_middle_delta, "window size", window_size)
             window_middle = window_middle + window_middle_delta
             blurry_frame_idx = [i+window_middle_delta for i in blurry_frame_idx]
 
@@ -185,10 +180,12 @@ def main():
     else:
         videos = f.read().split('\n')
 
+    window_sizes = [1,3,5,7,9,11,13,15]
     for video in videos:
-        extract_frames([video], args.videos_folder, extractPath)
-        create_clips_overlap([video], extractPath, testPath, testPath_blur, testPath_list)
-
+        if args.extract_frames == 1:
+            extract_frames([video], args.videos_folder, extractPath)
+        for window_size in window_sizes:
+            create_clips_overlap([video], extractPath, testPath, testPath_blur, testPath_list, window_size)
     if args.enable_train == 1:
         print("train")
         f = open('./train_list.txt', "r")
@@ -197,8 +194,10 @@ def main():
             videos = [videos[0]]
 
         for video in videos:
-            extract_frames([video], args.videos_folder, extractPath)
-            create_clips_overlap([video], extractPath, trainPath, trainPath_blur, trainPath_list)
+            if args.extract_frames == 1:
+                extract_frames([video], args.videos_folder, extractPath)
+            for window_size in window_sizes:
+                create_clips_overlap([video], extractPath, trainPath, trainPath_blur, trainPath_list, window_size)
 
 
 

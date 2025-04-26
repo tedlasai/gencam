@@ -653,6 +653,7 @@ def get_optimizer(args, params_to_optimize, use_deepspeed: bool = False):
 
 
 def main(args):
+    
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
@@ -1075,3 +1076,4 @@ def main(args):
 if __name__ == "__main__":
     args = get_args()
     main(args)
+    

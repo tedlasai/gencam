@@ -9,5 +9,6 @@ python ./create_dataset_blur_N_frames_average.py \
         --dataset_folder ../../Adobe_240fps_dataset/Adobe_240fps_blur\
         --videos_folder  ../../Adobe_240fps_dataset/original_high_fps_videos\
         --img_width 640 \
-        --img_height 352
+        --img_height 352 \
+        --extract_frames 1 \
 
