@@ -620,7 +620,7 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         input_intervals = transform_intervals(input_intervals)
         output_intervals = transform_intervals(output_intervals)
 
-        latents_initial, target, condition_mask, intervals = random_insert_latent_frame(image_latents, latents, latents, input_intervals, output_intervals, special_info="just_one")
+        latents_initial, target, condition_mask, intervals = random_insert_latent_frame(image_latents, latents, latents, input_intervals, output_intervals, special_info="use_a")
         
         latents = latents_initial.clone()
         with self.progress_bar(total=num_inference_steps) as progress_bar:

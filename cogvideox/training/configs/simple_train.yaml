@@ -21,7 +21,7 @@ validation_video: "../resources/car.mp4:::../resources/ship.mp4"
 validation_prompt_separator: ":::"
 num_validation_videos: 1
 validation_steps: 400
-guidance_scale: 1.5
+guidance_scale: 1.0
 use_dynamic_cfg: false
 just_validate: false
 special_info: "use_a"
