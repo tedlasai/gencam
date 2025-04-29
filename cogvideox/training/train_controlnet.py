@@ -58,7 +58,7 @@ from diffusers.utils import check_min_version, export_to_video, is_wandb_availab
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.torch_utils import is_compiled_module
 
-from controlnet_datasets import AdobeMotionBlurDataset, OutsidePhotosDataset
+from controlnet_datasets import AdobeMotionBlurDataset, OutsidePhotosDataset, GoProMotionBlurDataset
 from controlnet_pipeline import ControlnetCogVideoXPipeline
 from cogvideo_transformer import CogVideoXTransformer3DModel
 from cogvideo_controlnet import CogVideoXControlnet
@@ -517,14 +517,24 @@ def main(args):
     optimizer = get_optimizer(args, params_to_optimize, use_deepspeed=use_deepspeed_optimizer)
 
     # Dataset and DataLoader
-    train_dataset = AdobeMotionBlurDataset(
-        data_dir=os.path.join(args.base_dir, args.video_root_dir),
-        split = "train",
-        image_size=(args.height, args.width), 
-        stride=(args.stride_min, args.stride_max),
-        sample_n_frames=args.max_num_frames,
-        hflip_p=args.hflip_p,
-    )
+    if args.dataset == "adobe":
+        train_dataset = AdobeMotionBlurDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = "train",
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
+    elif args.dataset == "gopro":
+        train_dataset = GoProMotionBlurDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = "train",
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
 
     if args.dataset == "adobe":
         val_dataset = AdobeMotionBlurDataset(
@@ -545,6 +555,15 @@ def main(args):
             hflip_p=args.hflip_p,
         )
         train_dataset = val_dataset #dummy dataset
+    elif args.dataset == "gopro":
+        val_dataset = GoProMotionBlurDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = args.val_split,
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
     
         
     def encode_video(video):
@@ -840,6 +859,7 @@ def main(args):
                     if global_step >= args.max_train_steps:
                         break
 
+            print("Step", step)
             if accelerator.is_main_process:
                 if step == 0 or args.validation_prompt is not None and (step + 1) % args.validation_steps == 0:
                     # Create pipeline

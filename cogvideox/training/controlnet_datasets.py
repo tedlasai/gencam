@@ -244,11 +244,6 @@ class AdobeMotionBlurDataset(BaseClass):
                                 "/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/IMG_0179/00577_w07.png",
                                 "/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/IMG_0179/00577_w09.png"]
                                 
-
-
-                                
-
-
         self.length = len(self.image_paths)
         
     def __getitem__(self, idx):
@@ -313,5 +308,98 @@ class AdobeMotionBlurDataset(BaseClass):
             'motion_blur_amount': motion_blur_amount,
             'input_interval': torch.tensor([motion_blur_interval]),
             'output_interval': torch.tensor(intervals),
+        }
+        return data
+
+
+
+class GoProMotionBlurDataset(BaseClass):
+    def __init__(self,
+                 *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Set blur and sharp directories based on split
+        if self.split == 'train':
+            self.blur_root = os.path.join(self.data_dir, 'train', 'blur')
+            self.sharp_root = os.path.join(self.data_dir, 'train', 'sharp')
+        elif self.split in ['val', 'test']:
+            self.blur_root = os.path.join(self.data_dir, 'test', 'blur')
+            self.sharp_root = os.path.join(self.data_dir, 'test', 'sharp')
+        else:
+            raise ValueError(f"Unsupported split: {self.split}")
+
+        # Collect all blurred image paths
+        pattern = os.path.join(self.blur_root, '*', '*.png')
+        self.blur_paths = sorted(glob.glob(pattern))
+        if self.split == 'val':
+            # Optional: limit validation subset
+            self.blur_paths = self.blur_paths[:5]
+
+        # Window and padding parameters
+        self.window_size = 7              # original number of sharp frames
+        self.pad = 2                      # number of times to repeat last frame
+        self.output_length = self.window_size + self.pad
+        self.half_window = self.window_size // 2
+        self.length = len(self.blur_paths)
+
+        # Normalized input interval: always [-0.5, 0.5]
+        self.input_interval = torch.tensor([[-0.5, 0.5]], dtype=torch.float)
+
+        # Precompute normalized output intervals: first for window_size frames, then pad duplicates
+        step = 1.0 / (self.window_size - 1)
+        # intervals for the original 7 frames
+        window_intervals = []
+        for i in range(self.window_size):
+            start = -0.5 + i * step
+            if i < self.window_size - 1:
+                end = -0.5 + (i + 1) * step
+            else:
+                end = 0.5
+            window_intervals.append([start, end])
+        # append the last interval pad times
+        intervals = window_intervals + [window_intervals[-1]] * self.pad
+        self.output_interval = torch.tensor(intervals, dtype=torch.float)
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        # Path to the blurred (center) frame
+        blur_path = self.blur_paths[idx]
+        seq_name = os.path.basename(os.path.dirname(blur_path))
+        frame_name = os.path.basename(blur_path)
+        center_idx = int(os.path.splitext(frame_name)[0])
+
+        # Compute sharp frame range [center-half, center+half]
+        start_idx = center_idx - self.half_window
+        end_idx = center_idx + self.half_window
+
+        # Load sharp frames
+        sharp_dir = os.path.join(self.sharp_root, seq_name)
+        frames = []
+        for i in range(start_idx, end_idx + 1):
+            sharp_filename = f"{i:06d}.png"
+            sharp_path = os.path.join(sharp_dir, sharp_filename)
+            img = Image.open(sharp_path).convert('RGB')
+            frames.append(img)
+
+        # Repeat last sharp frame so total frames == output_length
+        while len(frames) < self.output_length:
+            frames.append(frames[-1])
+
+        # Load blurred image
+        blur_img = Image.open(blur_path).convert('RGB')
+
+        # Convert to pixel values via BaseClass loader
+        video = self.load_frames(np.array(frames))                    # shape: (output_length, H, W, C)
+        blur_input = self.load_frames(np.expand_dims(np.array(blur_img), 0))  # shape: (1, H, W, C)
+
+        data = {
+            'file_name': os.path.join(seq_name, frame_name),
+            'blur_img': blur_input,
+            'video': video,
+            "caption": "",
+            'motion_blur_amount': torch.tensor(self.half_window, dtype=torch.long),
+            'input_interval': self.input_interval,
+            'output_interval': self.output_interval,
         }
         return data
