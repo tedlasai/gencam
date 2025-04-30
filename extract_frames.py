@@ -2,9 +2,10 @@ import cv2
 import os
 from pathlib import Path
 import argparse
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 def extract_frames(video_path, output_root):
+    print(f"Processing video: {video_path}")
     video_name = Path(video_path).stem
     frames_dir = os.path.join(output_root, video_name)
     os.makedirs(frames_dir, exist_ok=True)
@@ -26,27 +27,30 @@ def extract_frames(video_path, output_root):
 def main(args):
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
+    max_workers = args.max_workers
 
-    # Make sure output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
     video_extensions = {'.mp4', '.mov', '.m4v', '.avi'}
-
     video_files = [input_dir / f for f in os.listdir(input_dir) if f.lower().endswith(tuple(video_extensions))]
 
     print(f"Found {len(video_files)} videos to process.")
 
-    # Use multiprocessing to parallelize
-    with ProcessPoolExecutor() as executor:
-        futures = [executor.submit(extract_frames, video, output_dir) for video in video_files]
+    # Process only a few videos at a time
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(extract_frames, video, output_dir): video for video in video_files}
 
-        # Wait for all futures to complete
-        for future in futures:
-            future.result()
+        for future in as_completed(futures):
+            video = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                print(f"Video {video} generated an exception: {exc}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract frames from videos into separate folders.")
     parser.add_argument("--input_dir", type=str, required=True, help="Directory containing input videos.")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save extracted frames.")
+    parser.add_argument("--max_workers", type=int, default=4, help="Number of videos to process in parallel.")
     args = parser.parse_args()
     main(args)

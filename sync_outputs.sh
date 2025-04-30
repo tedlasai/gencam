@@ -1,0 +1,2 @@
+rsync -va tedlasai@10.89.0.11:/datasets/sai/gencam/cogvideox/training/cogvideox-gopro/deblurred/ /home/tedlasai/genCamera/GoProResults/OursFullSize
+rsync -va tedlasai@10.89.0.11:/datasets/sai/gencam/cogvideox/training/cogvideox-gopro/blurry/ /home/tedlasai/genCamera/GoProResults/BlurryFullSize
