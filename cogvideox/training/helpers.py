@@ -43,10 +43,10 @@ def random_insert_latent_frame(
     _, M, _, _ = output_intervals.shape
     device = noisy_model_input.device
 
-    new_F = F + 2
+    new_F = F + 1 if special_info == "just_one" else F + 2
     outputs = torch.empty((B, new_F, C, H, W), device=device)
     masks = torch.zeros((B, new_F), dtype=torch.bool, device=device)
-    combined_groups = N + M + 1
+    combined_groups = N + M #+ 1
     feature_len = fpl * L
     # intervals = torch.empty((B, combined_groups, feature_len + 4), device=device,
     #                         dtype=input_intervals.dtype)
@@ -61,7 +61,22 @@ def random_insert_latent_frame(
         tgt = target_latents[b]
 
         limit = 10 if special_info == "use_a" else 0.5
-        if random.random() < limit: #ALWAYS_MODE_A
+        if special_info == "just_one": #ALWAYS_MODE_A
+            # Mode A: two latent inserts, zero-prefixed targets
+            outputs[b, 0] = latent
+            masks[b, :1] = True
+            outputs[b, 1:] = frames
+
+            # pad targets: two large-numbers - these should be ignored
+            large_number = torch.ones_like(tgt[0])*10000
+            new_targets[b, 0] = large_number
+            new_targets[b, 1:] = tgt
+
+            # pad intervals: input + replicated last input group
+            #pad_group = input_intervals[b, -1:].clone()
+            in_groups = input_intervals[b] #torch.cat([input_intervals[b], pad_group], dim=0)
+            out_groups = output_intervals[b]
+        elif random.random() < limit: #ALWAYS_MODE_A
             # Mode A: two latent inserts, zero-prefixed targets
             outputs[b, 0] = latent
             outputs[b, 1] = latent
@@ -78,7 +93,6 @@ def random_insert_latent_frame(
             pad_group = input_intervals[b, -1:].clone()
             in_groups = torch.cat([input_intervals[b], pad_group], dim=0)
             out_groups = output_intervals[b]
-            #in_flag, out_flag = 1, 0
         else:
             # Mode B: one latent insert & last-frame repeat, one-prefixed/appended targets
             outputs[b, 0] = latent
@@ -96,24 +110,18 @@ def random_insert_latent_frame(
             in_groups = input_intervals[b]
             pad_group = output_intervals[b, -1:].clone()
             out_groups = torch.cat([output_intervals[b], pad_group], dim=0)
-            #in_flag, out_flag = 1, 0
 
         # flatten & flag groups
         flat_in = in_groups.reshape(-1, feature_len)
-        # flags_in = torch.full((flat_in.size(0), 4), in_flag,
-        #                     device=device, dtype=input_intervals.dtype)
-        #proc_in = torch.cat([flat_in, flags_in], dim=1)
         proc_in = torch.cat([flat_in], dim=1)
 
         flat_out = out_groups.reshape(-1, feature_len)
-        # flags_out = torch.full((flat_out.size(0), 4), out_flag,
-        #                         device=device, dtype=output_intervals.dtype)
-        #proc_out = torch.cat([flat_out, flags_out], dim=1)
         proc_out = torch.cat([flat_out], dim=1)
 
         intervals[b] = torch.cat([proc_in, proc_out], dim=0)
 
     return outputs, new_targets, masks, intervals
+
 
 
 

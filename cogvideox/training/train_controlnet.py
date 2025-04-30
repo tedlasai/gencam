@@ -650,8 +650,8 @@ def main(args):
         )
 
     # Prepare everything with our `accelerator`.
-    transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        transformer, optimizer, train_dataloader, lr_scheduler
+    transformer, optimizer, train_dataloader, lr_scheduler, val_dataloader = accelerator.prepare(
+        transformer, optimizer, train_dataloader, lr_scheduler, val_dataloader
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -860,21 +860,24 @@ def main(args):
                         break
 
             print("Step", step)
-            if accelerator.is_main_process:
-                if step == 0 or args.validation_prompt is not None and (step + 1) % args.validation_steps == 0:
-                    # Create pipeline
-                    pipe = ControlnetCogVideoXPipeline.from_pretrained(
-                        os.path.join(args.base_dir, args.pretrained_model_name_or_path),
-                        transformer=unwrap_model(transformer),
-                        text_encoder=unwrap_model(text_encoder),
-                        vae=unwrap_model(vae),
-                        scheduler=scheduler,
-                        torch_dtype=weight_dtype,
-                    )
+            accelerator.wait_for_everyone()
+            if step == 0 or args.validation_prompt is not None and (step + 1) % args.validation_steps == 0:
+                # Create pipeline
+                pipe = ControlnetCogVideoXPipeline.from_pretrained(
+                    os.path.join(args.base_dir, args.pretrained_model_name_or_path),
+                    transformer=unwrap_model(transformer),
+                    text_encoder=unwrap_model(text_encoder),
+                    vae=unwrap_model(vae),
+                    scheduler=scheduler,
+                    torch_dtype=weight_dtype,
+                )
 
-                    # validation_prompts = args.validation_prompt.split(args.validation_prompt_separator)
-                    # validation_videos = args.validation_video.split(args.validation_prompt_separator)
-                    print("LEn of val_dataloader", len(val_dataloader))
+                # validation_prompts = args.validation_prompt.split(args.validation_prompt_separator)
+                # validation_videos = args.validation_video.split(args.validation_prompt_separator)
+                print("LEn of val_dataloader", len(val_dataloader))
+                with torch.autocast(
+                    str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
+                ):
                     for batch in val_dataloader:
                         # numpy_frames = read_video(validation_video, frames_count=args.max_num_frames)
                         # frame = Image.open("/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/GOPR9637a/00321_w09.png").convert("RGB")
@@ -908,7 +911,7 @@ def main(args):
                             modified_filenames.append(os.path.splitext(file)[0] + ".mp4")
 
                         #save the gt_video output
-                        if args.dataset == "adobe":
+                        if args.dataset not in ["outsidephotos"]:
                             gt_video = batch["videos"][0].permute(0,2,3,1).cpu().numpy()
                             gt_video = ((gt_video + 1) * 127.5)/255
                             

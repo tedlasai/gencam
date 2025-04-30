@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=train_deblur
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 #SBATCH --qos=scavenger
 #SBATCH --signal=B:USR1@600
 #SBATCH --cpus-per-task=24
