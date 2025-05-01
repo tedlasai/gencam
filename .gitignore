@@ -10,3 +10,5 @@ old_my_motion_blurred_images/
 cogvideox/training/cogvideox-controlnet-save
 cogvideox/training/cogvideox-controlnet-*
 FullDataset
+cogvideox/training/cogvideox-*
+cogvideox/training/logs

@@ -10,7 +10,7 @@ stride_max: 3
 hflip_p: 0.5
 downscale_coef: 8
 init_from_transformer: true
-dataloader_num_workers: 32
+dataloader_num_workers: 8
 val_split: "val"
 dataset: "gopro"
 
@@ -29,7 +29,7 @@ special_info: "just_one"
 # === Training ===
 seed: 42
 mixed_precision: "bf16"
-output_dir: "cogvideox-gopro"
+output_dir: "cogvideox-gopro-big"
 height: 720
 width: 1280
 fps: 8
@@ -37,7 +37,7 @@ max_num_frames: 9
 train_batch_size: 4
 num_train_epochs: 100
 max_train_steps: null
-checkpointing_steps: 400
+checkpointing_steps: 100
 checkpoints_total_limit: null
 gradient_accumulation_steps: 1
 gradient_checkpointing: true

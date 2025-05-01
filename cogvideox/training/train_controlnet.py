@@ -73,7 +73,7 @@ check_min_version("0.31.0.dev0")
 logger = get_logger(__name__)
 
 
-
+print("REACHED")
 
 def get_args():
     parser = argparse.ArgumentParser(description="Training script for CogVideoX using config file.")
