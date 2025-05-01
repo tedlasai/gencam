@@ -359,7 +359,7 @@ def main(args):
     logging_dir = Path(args.output_dir, args.logging_dir)
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
-    kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -816,15 +816,19 @@ def main(args):
 
                     loss = torch.mean((weights * (model_pred[~condition_mask] - target[~condition_mask]) ** 2).reshape(batch_size, -1), dim=1)
                     loss = loss.mean()
+                    loss_start_time = time.time()
                     accelerator.backward(loss)
+                    print("Compute loss end time", time.time() - loss_start_time)
 
                     #if accelerator.sync_gradients:
                         #params_to_clip = transformer.parameters()
                         #accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
+                    optimizer_step_start_time = time.time()
                     if accelerator.state.deepspeed_plugin is None:
                         optimizer.step()
                         optimizer.zero_grad()
+                    print("Optimizer step time in seconds", time.time() - optimizer_step_start_time)
 
                     lr_scheduler.step()
 
@@ -861,94 +865,95 @@ def main(args):
 
             print("Step", step)
             accelerator.wait_for_everyone()
-            if step == 0 or args.validation_prompt is not None and (step + 1) % args.validation_steps == 0:
-                # Create pipeline
-                pipe = ControlnetCogVideoXPipeline.from_pretrained(
-                    os.path.join(args.base_dir, args.pretrained_model_name_or_path),
-                    transformer=unwrap_model(transformer),
-                    text_encoder=unwrap_model(text_encoder),
-                    vae=unwrap_model(vae),
-                    scheduler=scheduler,
-                    torch_dtype=weight_dtype,
-                )
+            if accelerator.is_main_process:
+                if args.validation_prompt is not None and (step + 1) % args.validation_steps == 0:
+                    # Create pipeline
+                    pipe = ControlnetCogVideoXPipeline.from_pretrained(
+                        os.path.join(args.base_dir, args.pretrained_model_name_or_path),
+                        transformer=unwrap_model(transformer),
+                        text_encoder=unwrap_model(text_encoder),
+                        vae=unwrap_model(vae),
+                        scheduler=scheduler,
+                        torch_dtype=weight_dtype,
+                    )
 
-                # validation_prompts = args.validation_prompt.split(args.validation_prompt_separator)
-                # validation_videos = args.validation_video.split(args.validation_prompt_separator)
-                print("LEn of val_dataloader", len(val_dataloader))
-                with torch.autocast(
-                    str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
-                ):
-                    for batch in val_dataloader:
-                        # numpy_frames = read_video(validation_video, frames_count=args.max_num_frames)
-                        # frame = Image.open("/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/GOPR9637a/00321_w09.png").convert("RGB")
-                        # #add dimension to the frame
-                        # frame = np.array(frame)
-                        # frame = np.expand_dims(frame, axis=0)
-                        frame = ((batch["blur_img"][0].permute(0,2,3,1).cpu().numpy() + 1)*127.5).astype(np.uint8)
+                    # validation_prompts = args.validation_prompt.split(args.validation_prompt_separator)
+                    # validation_videos = args.validation_video.split(args.validation_prompt_separator)
+                    print("LEn of val_dataloader", len(val_dataloader))
+                    with torch.autocast(
+                        str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "bf16"
+                    ):
+                        for batch in val_dataloader:
+                            # numpy_frames = read_video(validation_video, frames_count=args.max_num_frames)
+                            # frame = Image.open("/datasets/sai/gencam/Adobe_240fps_dataset/Adobe_240fps_blur/test_blur/GOPR9637a/00321_w09.png").convert("RGB")
+                            # #add dimension to the frame
+                            # frame = np.array(frame)
+                            # frame = np.expand_dims(frame, axis=0)
+                            frame = ((batch["blur_img"][0].permute(0,2,3,1).cpu().numpy() + 1)*127.5).astype(np.uint8)
 
 
-                        print("frame shape", frame.shape)
-                    
-                        pipeline_args = {
-                            "prompt": "",
-                            "negative_prompt": "",
-                            "image": frame,
-                            "input_intervals": batch["input_intervals"][0:1],
-                            "output_intervals": batch["output_intervals"][0:1],
-                            "motion_blur_amount": 0,
-                            "guidance_scale": args.guidance_scale,
-                            "use_dynamic_cfg": args.use_dynamic_cfg,
-                            "height": args.height,
-                            "width": args.width,
-                            "num_frames": args.max_num_frames,
-                            "num_inference_steps": args.num_inference_steps,
-                        }
+                            print("frame shape", frame.shape)
+                        
+                            pipeline_args = {
+                                "prompt": "",
+                                "negative_prompt": "",
+                                "image": frame,
+                                "input_intervals": batch["input_intervals"][0:1],
+                                "output_intervals": batch["output_intervals"][0:1],
+                                "motion_blur_amount": 0,
+                                "guidance_scale": args.guidance_scale,
+                                "use_dynamic_cfg": args.use_dynamic_cfg,
+                                "height": args.height,
+                                "width": args.width,
+                                "num_frames": args.max_num_frames,
+                                "num_inference_steps": args.num_inference_steps,
+                            }
 
-                        modified_filenames = []
-                        filenames = batch['file_names']
-                        for file in filenames:
-                            print(file)
-                            modified_filenames.append(os.path.splitext(file)[0] + ".mp4")
+                            modified_filenames = []
+                            filenames = batch['file_names']
+                            for file in filenames:
+                                print(file)
+                                modified_filenames.append(os.path.splitext(file)[0] + ".mp4")
 
-                        #save the gt_video output
-                        if args.dataset not in ["outsidephotos"]:
-                            gt_video = batch["videos"][0].permute(0,2,3,1).cpu().numpy()
-                            gt_video = ((gt_video + 1) * 127.5)/255
+                            #save the gt_video output
+                            if args.dataset not in ["outsidephotos"]:
+                                gt_video = batch["videos"][0].permute(0,2,3,1).cpu().numpy()
+                                gt_video = ((gt_video + 1) * 127.5)/255
+                                
+                                for file in modified_filenames:
+                                    #create the directory if it does not exist
+                                    gt_file_name = os.path.join(args.output_dir, "gt", modified_filenames[0])
+                                    os.makedirs(os.path.dirname(gt_file_name), exist_ok=True)
+                                    export_to_video(gt_video, gt_file_name, fps=20)
                             
                             for file in modified_filenames:
                                 #create the directory if it does not exist
-                                gt_file_name = os.path.join(args.output_dir, "gt", modified_filenames[0])
-                                os.makedirs(os.path.dirname(gt_file_name), exist_ok=True)
-                                export_to_video(gt_video, gt_file_name, fps=20)
-                        
-                        for file in modified_filenames:
-                            #create the directory if it does not exist
-                            blurry_file_name = os.path.join(args.output_dir, "blurry", modified_filenames[0].replace(".mp4", ".png"))
-                            os.makedirs(os.path.dirname(blurry_file_name), exist_ok=True)
-                            #save the blurry image
-                            Image.fromarray(frame[0]).save(blurry_file_name)
-                            
+                                blurry_file_name = os.path.join(args.output_dir, "blurry", modified_filenames[0].replace(".mp4", ".png"))
+                                os.makedirs(os.path.dirname(blurry_file_name), exist_ok=True)
+                                #save the blurry image
+                                Image.fromarray(frame[0]).save(blurry_file_name)
+                                
 
-                        videos = log_validation(
-                            pipe=pipe,
-                            args=args,
-                            accelerator=accelerator,
-                            pipeline_args=pipeline_args,
-                            epoch=epoch,
-                        )
-
-                        for i, video in enumerate(videos):
-                            prompt = (
-                                pipeline_args["prompt"][:25]
-                                .replace(" ", "_")
-                                .replace(" ", "_")
-                                .replace("'", "_")
-                                .replace('"', "_")
-                                .replace("/", "_")
+                            videos = log_validation(
+                                pipe=pipe,
+                                args=args,
+                                accelerator=accelerator,
+                                pipeline_args=pipeline_args,
+                                epoch=epoch,
                             )
-                            filename = os.path.join(args.output_dir, "deblurred", modified_filenames[0])
-                            os.makedirs(os.path.dirname(filename), exist_ok=True)
-                            export_to_video(video, filename, fps=20)
+
+                            for i, video in enumerate(videos):
+                                prompt = (
+                                    pipeline_args["prompt"][:25]
+                                    .replace(" ", "_")
+                                    .replace(" ", "_")
+                                    .replace("'", "_")
+                                    .replace('"', "_")
+                                    .replace("/", "_")
+                                )
+                                filename = os.path.join(args.output_dir, "deblurred", modified_filenames[0])
+                                os.makedirs(os.path.dirname(filename), exist_ok=True)
+                                export_to_video(video, filename, fps=20)
 
                 if args.just_validate:
                     exit(0)

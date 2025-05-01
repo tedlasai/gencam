@@ -2,6 +2,7 @@ import io
 import os
 import glob
 import random
+import time
 
 
 import cv2
@@ -364,6 +365,7 @@ class GoProMotionBlurDataset(BaseClass):
 
     def __getitem__(self, idx):
         # Path to the blurred (center) frame
+        start_time = time.time()
         blur_path = self.blur_paths[idx]
         seq_name = os.path.basename(os.path.dirname(blur_path))
         frame_name = os.path.basename(blur_path)
@@ -392,7 +394,8 @@ class GoProMotionBlurDataset(BaseClass):
         # Convert to pixel values via BaseClass loader
         video = self.load_frames(np.array(frames))                    # shape: (output_length, H, W, C)
         blur_input = self.load_frames(np.expand_dims(np.array(blur_img), 0))  # shape: (1, H, W, C)
-
+        end_time = time.time()
+        print(f"Time taken to load and process data: {end_time - start_time:.2f} seconds")
         data = {
             'file_name': os.path.join(seq_name, frame_name),
             'blur_img': blur_input,
