@@ -484,7 +484,6 @@ class ControlnetCogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
     def __call__(
         self,
         image,
-        motion_blur_amount,
         input_intervals,
         output_intervals,
         prompt: Optional[Union[str, List[str]]] = None,

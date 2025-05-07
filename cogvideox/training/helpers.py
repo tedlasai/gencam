@@ -1,6 +1,9 @@
 import torch 
 import math
 import random
+import numpy as np
+from PIL import Image
+
 def random_insert_latent_frame(
     image_latent: torch.Tensor,
     noisy_model_input: torch.Tensor,
@@ -161,3 +164,187 @@ def transform_intervals(
 
     # reshape into latent-frame groups
     return expanded.view(B, num_latent, frames_per_latent, L)
+
+import random
+import numpy as np
+import torch
+from PIL import Image
+
+
+import random
+import numpy as np
+import torch
+from PIL import Image
+
+
+def build_blur(frame_paths, gamma=2.2):
+    """
+    Simulate motion blur using inverse-gamma (linear-light) summation:
+    - Load each image, convert to float32 sRGB [0,255]
+    - Linearize via inverse gamma: linear = (img/255)^gamma
+    - Sum linear values, average, then re-encode via gamma: (linear_avg)^(1/gamma)*255
+    Returns a uint8 numpy array.
+    """
+    acc_lin = None
+    for p in frame_paths:
+        img = np.array(Image.open(p).convert('RGB'), dtype=np.float32)
+        # normalize to [0,1] then linearize
+        lin = np.power(img / 255.0, gamma)
+        acc_lin = lin if acc_lin is None else acc_lin + lin
+    # average in linear domain
+    avg_lin = acc_lin / len(frame_paths)
+    # gamma-encode back to sRGB domain
+    srgb = np.power(avg_lin, 1.0 / gamma) * 255.0
+    return np.clip(srgb, 0, 255).astype(np.uint8)
+
+
+
+def generate_1x_sequence(frame_paths, output_len=25, base_rate=1):
+    """
+    1× mode at arbitrary base_rate (units of 1/240s):
+      - Treat each output step as the sum of `base_rate` consecutive raw frames.
+      - Pick window size W ∈ [1, output_len]
+      - Randomly choose start index so W*base_rate frames fit
+      - Group raw frames into W groups of length base_rate
+      - Build blur image over all W*base_rate frames for input
+      - For each group, build a blurred output frame by summing its base_rate frames
+      - Pad sequence of W blurred frames to output_len by repeating last blurred frame
+      - Input interval always [-0.5, 0.5]
+      - Output intervals reflect each group’s coverage within [-0.5,0.5]
+    """
+    N = len(frame_paths)
+    max_w = min(output_len, N // base_rate)
+    W = random.randint(1, max_w)
+    start = random.randint(0, N - W * base_rate)
+
+    # group start indices
+    group_starts = [start + i * base_rate for i in range(W)]
+    # flatten raw frame paths for blur input
+    blur_paths = []
+    for gs in group_starts:
+        blur_paths.extend(frame_paths[gs:gs + base_rate])
+    blur_img = build_blur(blur_paths)
+
+    # build blurred output frames per group
+    seq = []
+    for gs in group_starts:
+        group = frame_paths[gs:gs + base_rate]
+        seq.append(build_blur(group))
+    # pad with last blurred frame
+    seq += [seq[-1]] * (output_len - len(seq))
+
+    input_interval = torch.tensor([[-0.5, 0.5]], dtype=torch.float)
+    # each group covers interval of length 1/W
+    step = 1.0 / W
+    intervals = [[-0.5 + i * step, -0.5 + (i + 1) * step] for i in range(W)]
+    intervals += [intervals[-1]] * (output_len - W)
+    output_intervals = torch.tensor(intervals, dtype=torch.float)
+
+    return blur_img, seq, input_interval, output_intervals
+
+
+def generate_2x_sequence(frame_paths, output_len=25, base_rate=1):
+    """
+    2× mode:
+      - Logical window of W output-steps so that 2*W ≤ output_len
+      - Raw window spans W*base_rate frames
+      - Build blur only over that raw window (flattened) for input
+      - before_count = W//2, after_count = W - before_count
+      - Define groups for before, during, and after each of length base_rate
+      - Build blurred frames for each group
+      - Pad sequence of 2*W blurred frames to output_len by repeating last
+      - Input interval always [-0.5,0.5]
+      - Output intervals relative to window: each group’s center
+    """
+    N = len(frame_paths)
+    max_w = min(output_len // 2, N // base_rate)
+    W = random.randint(1, max_w)
+    before_count = W // 2
+    after_count = W - before_count
+    # choose start so that before and after stay within bounds
+    min_start = before_count * base_rate
+    max_start = N - (W + after_count) * base_rate
+    # ensure we can pick a valid start, else fail
+    assert max_start >= min_start, f"Cannot satisfy before/after window for W={W}, base_rate={base_rate}, N={N}"
+    start = random.randint(min_start, max_start)
+
+
+    # window group starts
+    window_starts = [start + i * base_rate for i in range(W)]
+    # flatten for blur input
+    blur_paths = []
+    for gs in window_starts:
+        blur_paths.extend(frame_paths[gs:gs + base_rate])
+
+
+    blur_img = build_blur(blur_paths)
+
+    # define before/after group starts
+    before_count = W // 2
+    after_count = W - before_count
+    before_starts = [max(0, start - (i + 1) * base_rate) for i in range(before_count)][::-1]
+    after_starts  = [min(N - base_rate, start + W * base_rate + i * base_rate) for i in range(after_count)]
+
+    # all group starts in sequence
+    group_starts = before_starts + window_starts + after_starts
+    # build blurred frames per group
+    seq = []
+    for gs in group_starts:
+        group = frame_paths[gs:gs + base_rate]
+        seq.append(build_blur(group))
+    # pad blurred frames to output_len
+    seq += [seq[-1]] * (output_len - len(seq))
+
+    input_interval = torch.tensor([[-0.5, 0.5]], dtype=torch.float)
+    # each group covers 1/(2W) around its center within [-0.5,0.5]
+    half = 0.5 / W
+    centers = [((gs - start) / (W * base_rate)) - 0.5 + half
+               for gs in group_starts]
+    intervals = [[c - half, c + half] for c in centers]
+    intervals += [intervals[-1]] * (output_len - len(intervals))
+    output_intervals = torch.tensor(intervals, dtype=torch.float)
+
+    return blur_img, seq, input_interval, output_intervals
+
+
+def generate_large_blur_sequence(frame_paths, output_len=17, base_rate=1):
+    """
+    Large blur mode (fixed output_len=25) with instantaneous outputs:
+      - Raw window spans 25 * base_rate consecutive frames
+      - Build blur over that full raw window for input
+      - For output sequence:
+          • Pick 1 raw frame every `base_rate` (group_starts)
+          • Each output frame is the instantaneous frame at that raw index
+      - Input interval always [-0.5, 0.5]
+      - Output intervals reflect each 1-frame slice’s coverage within the blur window,
+        leaving gaps between.
+    """
+    N = len(frame_paths)
+    total_raw = output_len * base_rate
+    assert N >= total_raw, f"Not enough frames for base_rate={base_rate}, need {total_raw}, got {N}"
+    start = random.randint(0, N - total_raw)
+
+    # build blur input over the full raw block
+    raw_block = frame_paths[start:start + total_raw]
+    blur_img = build_blur(raw_block)
+
+    # output sequence: instantaneous frames at each group_start
+    seq = []
+    group_starts = [start + i * base_rate for i in range(output_len)]
+    for gs in group_starts:
+        img = np.array(Image.open(frame_paths[gs]).convert('RGB'), dtype=np.uint8)
+        seq.append(img)
+
+    # compute intervals for each instantaneous frame:
+    # each covers [gs, gs+1) over total_raw, normalized to [-0.5, 0.5]
+    intervals = []
+    for gs in group_starts:
+        t0 = (gs - start) / total_raw - 0.5
+        t1 = (gs + 1 - start) / total_raw - 0.5
+        intervals.append([t0, t1])
+    output_intervals = torch.tensor(intervals, dtype=torch.float)
+
+    # input interval
+    input_interval = torch.tensor([[-0.5, 0.5]], dtype=torch.float)
+    return blur_img, seq, input_interval, output_intervals
+

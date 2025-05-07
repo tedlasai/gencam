@@ -10,12 +10,12 @@ stride_max: 3
 hflip_p: 0.5
 downscale_coef: 8
 init_from_transformer: true
-dataloader_num_workers: 8
+dataloader_num_workers: 2
 val_split: "val"
 dataset: "gopro"
 
 # === Validation ===
-num_inference_steps: 28
+num_inference_steps: 50
 validation_prompt: ""
 validation_video: "../resources/car.mp4:::../resources/ship.mp4"
 validation_prompt_separator: ":::"

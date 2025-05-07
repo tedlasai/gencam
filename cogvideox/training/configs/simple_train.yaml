@@ -15,7 +15,7 @@ val_split: "val"
 dataset: "adobe"
 
 # === Validation ===
-num_inference_steps: 28
+num_inference_steps: 50
 validation_prompt: ""
 validation_video: "../resources/car.mp4:::../resources/ship.mp4"
 validation_prompt_separator: ":::"

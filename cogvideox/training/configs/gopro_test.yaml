@@ -15,7 +15,7 @@ val_split: "test"
 dataset: "gopro"
 
 # === Validation ===
-num_inference_steps: 28
+num_inference_steps: 50
 validation_prompt: ""
 validation_video: "../resources/car.mp4:::../resources/ship.mp4"
 validation_prompt_separator: ":::"
@@ -29,7 +29,7 @@ special_info: "just_one"
 # === Training ===
 seed: 42
 mixed_precision: "bf16"
-output_dir: "cogvideox-gopro"
+output_dir: "cogvideox-gopro-big-another"
 height: 720
 width: 1280
 fps: 8
@@ -64,7 +64,7 @@ prodigy_use_bias_correction: false
 prodigy_safeguard_warmup: false
 
 # === Logging & Reporting ===
-tracker_name: "cogvideox-gopro"
+tracker_name: "cogvideox-gopro-big-another"
 push_to_hub: false
 hub_token: null
 hub_model_id: null

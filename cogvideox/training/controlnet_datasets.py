@@ -14,6 +14,8 @@ from PIL import Image, ImageOps, ImageCms
 from decord import VideoReader
 from torch.utils.data.dataset import Dataset
 from controlnet_aux import CannyDetector, HEDdetector
+import torch.nn.functional as F
+from helpers import generate_1x_sequence, generate_2x_sequence, generate_large_blur_sequence
 
 
 def unpack_mm_params(p):
@@ -74,9 +76,20 @@ class BaseClass(Dataset):
     def __len__(self):
         return self.length
         
+
     def load_frames(self, frames):
-        pixel_values = torch.from_numpy(frames).permute(0, 3, 1, 2).contiguous()
-        pixel_values = pixel_values / 127.5 - 1
+        # frames: numpy array of shape (N, H, W, C), 0–255
+        # → tensor of shape (N, C, H, W) as float
+        pixel_values = torch.from_numpy(frames).permute(0, 3, 1, 2).contiguous().float()
+        # normalize to [-1, 1]
+        pixel_values = pixel_values / 127.5 - 1.0
+        # resize to (self.height, self.width)
+        pixel_values = F.interpolate(
+            pixel_values,
+            size=(self.height, self.width),
+            mode="bilinear",
+            align_corners=False
+        )
         return pixel_values
         
     def get_batch(self, idx):
@@ -165,7 +178,6 @@ class OutsidePhotosDataset(BaseClass):
             'blur_img': torch.tensor(blur_pixel_values, dtype=torch.float32),
             'video': torch.tensor(pixel_values, dtype=torch.float32),
             'caption': "",
-            'motion_blur_amount': torch.tensor(4),
             'input_interval': torch.tensor([[0, 9]]),
             'output_interval': torch.tensor(intervals),
         }
@@ -330,7 +342,8 @@ class GoProMotionBlurDataset(BaseClass):
 
         # Collect all blurred image paths
         pattern = os.path.join(self.blur_root, '*', '*.png')
-        self.blur_paths = sorted(glob.glob(pattern))
+
+        self.blur_paths = sorted(glob.glob(pattern))[::-1] #just cause I messed up so lets do reverse to get these images to come first
         if self.split == 'val':
             # Optional: limit validation subset
             self.blur_paths = self.blur_paths[:5]
@@ -395,7 +408,7 @@ class GoProMotionBlurDataset(BaseClass):
         video = self.load_frames(np.array(frames))                    # shape: (output_length, H, W, C)
         blur_input = self.load_frames(np.expand_dims(np.array(blur_img), 0))  # shape: (1, H, W, C)
         end_time = time.time()
-        print(f"Time taken to load and process data: {end_time - start_time:.2f} seconds")
+        #print(f"Time taken to load and process data: {end_time - start_time:.2f} seconds")
         data = {
             'file_name': os.path.join(seq_name, frame_name),
             'blur_img': blur_input,
@@ -404,5 +417,99 @@ class GoProMotionBlurDataset(BaseClass):
             'motion_blur_amount': torch.tensor(self.half_window, dtype=torch.long),
             'input_interval': self.input_interval,
             'output_interval': self.output_interval,
+        }
+        return data
+
+class FullMotionBlurDataset(BaseClass):
+    """
+    A dataset that randomly selects among 1×, 2×, or large-blur modes per sample.
+    Uses category-specific <split>_list.txt files under each subfolder of FullDataset to assemble sequences.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Assemble sequence directories based on each category's split list
+        self.seq_dirs = []
+        #if split is trian, then train, else "test"
+        text_file_name = "train_list.txt" if self.split == "train" else "test_list.txt"
+        for category in sorted(os.listdir(self.data_dir)):
+            cat_dir = os.path.join(self.data_dir, category)
+            if not os.path.isdir(cat_dir):
+                continue
+            list_file = os.path.join(cat_dir, text_file_name)
+            if os.path.isfile(list_file):
+                with open(list_file, 'r') as f:
+                    for line in f:
+                        rel = line.strip()
+                        # Skip empty lines
+                        if not rel:
+                            continue
+                        seq_dir = os.path.join(self.data_dir, rel)
+                        if os.path.isdir(seq_dir):
+                            self.seq_dirs.append(seq_dir)
+            else:
+                # No list file for this category: fallback to scanning all sequences
+                fps_root = os.path.join(cat_dir, 'lower_fps_frames')
+                if os.path.isdir(fps_root):
+                    for seq in sorted(os.listdir(fps_root)):
+                        seq_path = os.path.join(fps_root, seq)
+                        if os.path.isdir(seq_path):
+                            self.seq_dirs.append(seq_path)
+        if self.split == 'val':
+            # Optional: limit validation subset
+            self.seq_dirs = self.seq_dirs[:5]
+        if self.split == 'train':
+            #duplicate the training set
+            self.seq_dirs = self.seq_dirs * 10
+
+        assert len(self.seq_dirs) > 0, f"No sequences found for split '{self.split}' in {self.data_dir}"
+
+    def __len__(self):
+        return len(self.seq_dirs)
+
+    def __getitem__(self, idx):
+        seq_dir = self.seq_dirs[idx]
+        # gather all raw frames (240fps) for this sequence
+        frame_paths = sorted(glob.glob(os.path.join(seq_dir, '*.png')))
+        # pick a mode at random
+        mode = random.choice(['1x']) #'2x', 'large_blur'])
+        #randomly choose base_rate
+        
+        if mode == '1x' or len(frame_paths) < 50:
+            base_rate = random.choice([1, 2])
+            blur_img, seq, inp_int, out_int = generate_1x_sequence(
+                frame_paths, output_len=17, base_rate=base_rate)
+        elif mode == '2x':
+            base_rate = random.choice([1, 2])
+            blur_img, seq, inp_int, out_int = generate_2x_sequence(
+                frame_paths, output_len=17, base_rate=base_rate)
+        else:
+            # compute the maximum integer base_rate such that output_len * base_rate < num_frames
+            max_base_rate = (len(frame_paths) - 1) // 17
+            # randomly pick base_rate in [1, max_base_rate]
+            base_rate = random.randint(1, max_base_rate)
+            # randomly choose base_rate such that output_len*base_rate < len(frame_paths)
+            blur_img, seq, inp_int, out_int = generate_large_blur_sequence(
+                frame_paths, output_len=17, base_rate=base_rate)
+
+        # Convert to tensors via BaseClass loader
+        blur_input = self.load_frames(np.expand_dims(blur_img, 0))
+        video = self.load_frames(np.stack(seq, axis=0))
+
+        print("Got video shape: ", video.shape)
+
+        full_fn = os.path.join(seq_dir, frame_paths[0])
+
+        print("input interval: ", inp_int)
+        print("output interval: ", out_int)
+
+        data = {
+            'file_name': os.path.relpath(full_fn, self.data_dir),
+            'blur_img': blur_input,
+            'video': video,
+            'caption': "",
+            'mode': mode,
+            'input_interval': inp_int,
+            'output_interval': out_int,
         }
         return data
