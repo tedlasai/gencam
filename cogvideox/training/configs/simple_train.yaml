@@ -24,7 +24,7 @@ validation_steps: 400
 guidance_scale: 1.0
 use_dynamic_cfg: false
 just_validate: false
-special_info: "use_a"
+special_info: "just_one"
 
 # === Training ===
 seed: 42

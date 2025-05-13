@@ -472,25 +472,30 @@ class FullMotionBlurDataset(BaseClass):
         # gather all raw frames (240fps) for this sequence
         frame_paths = sorted(glob.glob(os.path.join(seq_dir, '*.png')))
         # pick a mode at random
-        mode = random.choice(['1x']) #'2x', 'large_blur'])
+        mode = random.choice(['1x', '2x', 'large_blur']) #'2x', 'large_blur'])
         #randomly choose base_rate
         
         if mode == '1x' or len(frame_paths) < 50:
             base_rate = random.choice([1, 2])
             blur_img, seq, inp_int, out_int = generate_1x_sequence(
-                frame_paths, output_len=17, base_rate=base_rate)
+                frame_paths, window_max = 16, output_len=17, base_rate=base_rate)
         elif mode == '2x':
             base_rate = random.choice([1, 2])
             blur_img, seq, inp_int, out_int = generate_2x_sequence(
-                frame_paths, output_len=17, base_rate=base_rate)
+                frame_paths, window_max = 16, output_len=17, base_rate=base_rate)
         else:
             # compute the maximum integer base_rate such that output_len * base_rate < num_frames
             max_base_rate = (len(frame_paths) - 1) // 17
+
+            #if max_base_rate > 3, then set it to 3
+            max_base_rate = min(max_base_rate, 3)
+            
             # randomly pick base_rate in [1, max_base_rate]
             base_rate = random.randint(1, max_base_rate)
+            
             # randomly choose base_rate such that output_len*base_rate < len(frame_paths)
             blur_img, seq, inp_int, out_int = generate_large_blur_sequence(
-                frame_paths, output_len=17, base_rate=base_rate)
+                frame_paths, window_max = 16, output_len=17, base_rate=base_rate)
 
         # Convert to tensors via BaseClass loader
         blur_input = self.load_frames(np.expand_dims(blur_img, 0))

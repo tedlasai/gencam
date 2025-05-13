@@ -35,9 +35,9 @@ width: 1280
 fps: 8
 max_num_frames: 17
 train_batch_size: 2
-num_train_epochs: 500
+num_train_epochs: 200
 max_train_steps: null
-checkpointing_steps: 50
+checkpointing_steps: 200
 checkpoints_total_limit: null
 gradient_accumulation_steps: 2
 gradient_checkpointing: true

@@ -199,7 +199,7 @@ def build_blur(frame_paths, gamma=2.2):
 
 
 
-def generate_1x_sequence(frame_paths, output_len=25, base_rate=1):
+def generate_1x_sequence(frame_paths, window_max =16, output_len=17, base_rate=1, start = None):
     """
     1× mode at arbitrary base_rate (units of 1/240s):
       - Treat each output step as the sum of `base_rate` consecutive raw frames.
@@ -214,8 +214,14 @@ def generate_1x_sequence(frame_paths, output_len=25, base_rate=1):
     """
     N = len(frame_paths)
     max_w = min(output_len, N // base_rate)
+    max_w = min(max_w, window_max)
     W = random.randint(1, max_w)
-    start = random.randint(0, N - W * base_rate)
+    if start is not None:
+        # choose start so that W*base_rate frames fit
+        assert N >= W * base_rate, f"Not enough frames for base_rate={base_rate}, need {W * base_rate}, got {N}"
+    else:
+        start = random.randint(0, N - W * base_rate)
+        
 
     # group start indices
     group_starts = [start + i * base_rate for i in range(W)]
@@ -242,8 +248,16 @@ def generate_1x_sequence(frame_paths, output_len=25, base_rate=1):
 
     return blur_img, seq, input_interval, output_intervals
 
+#for each video do a 1x,2x, and large blur in the test list - choose at max two spots per video
+# so you need to update the dataloader and these helpers to handle this setting
+# and write a script that sets all of these settings and writes it to a file
+# finally, I need to come up with a scheme to write all of this out blurry/Adobe240/lower_fps_frames/GOPRO9656/frame_1325_b_1320_1335_r_1320_1345_1x.png,
+#This should take 2 hrs above
 
-def generate_2x_sequence(frame_paths, output_len=25, base_rate=1):
+#then write a dataloader that handles_outside_files and just uses the naming convention to figure out how to deblur image_start_end_w4_240_1x.png, image_b_w7_240_1x.png, image_b_w8_240_1x.png, image_b_w12_240_1x.png, image_b_w16_240_1x.png, image_b_w8_240_2x.png, image_b_w8_120_2x.png, and image_b_w32_240_lb.png, image_start_end_w48_240_lb.png
+#find points in each video with at least 24 frames on each side - thats the large blur (48 frame case)
+
+def generate_2x_sequence(frame_paths, window_max =16, output_len=17, base_rate=1):
     """
     2× mode:
       - Logical window of W output-steps so that 2*W ≤ output_len
@@ -258,6 +272,7 @@ def generate_2x_sequence(frame_paths, output_len=25, base_rate=1):
     """
     N = len(frame_paths)
     max_w = min(output_len // 2, N // base_rate)
+    max_w = min(max_w, window_max)
     W = random.randint(1, max_w)
     before_count = W // 2
     after_count = W - before_count
@@ -274,6 +289,7 @@ def generate_2x_sequence(frame_paths, output_len=25, base_rate=1):
     # flatten for blur input
     blur_paths = []
     for gs in window_starts:
+        print(f"gs: {gs}, base_rate: {base_rate}")
         blur_paths.extend(frame_paths[gs:gs + base_rate])
 
 
@@ -288,6 +304,7 @@ def generate_2x_sequence(frame_paths, output_len=25, base_rate=1):
     # all group starts in sequence
     group_starts = before_starts + window_starts + after_starts
     # build blurred frames per group
+    print(f"Group starts: {group_starts}")
     seq = []
     for gs in group_starts:
         group = frame_paths[gs:gs + base_rate]
@@ -307,7 +324,7 @@ def generate_2x_sequence(frame_paths, output_len=25, base_rate=1):
     return blur_img, seq, input_interval, output_intervals
 
 
-def generate_large_blur_sequence(frame_paths, output_len=17, base_rate=1):
+def generate_large_blur_sequence(frame_paths, window_max=16, output_len=17, base_rate=1):
     """
     Large blur mode (fixed output_len=25) with instantaneous outputs:
       - Raw window spans 25 * base_rate consecutive frames
@@ -320,7 +337,7 @@ def generate_large_blur_sequence(frame_paths, output_len=17, base_rate=1):
         leaving gaps between.
     """
     N = len(frame_paths)
-    total_raw = output_len * base_rate
+    total_raw = window_max * base_rate
     assert N >= total_raw, f"Not enough frames for base_rate={base_rate}, need {total_raw}, got {N}"
     start = random.randint(0, N - total_raw)
 
@@ -330,10 +347,12 @@ def generate_large_blur_sequence(frame_paths, output_len=17, base_rate=1):
 
     # output sequence: instantaneous frames at each group_start
     seq = []
-    group_starts = [start + i * base_rate for i in range(output_len)]
+    group_starts = [start + i * base_rate for i in range(window_max)]
     for gs in group_starts:
         img = np.array(Image.open(frame_paths[gs]).convert('RGB'), dtype=np.uint8)
         seq.append(img)
+     # pad blurred frames to output_len
+    seq += [seq[-1]] * (output_len - len(seq))
 
     # compute intervals for each instantaneous frame:
     # each covers [gs, gs+1) over total_raw, normalized to [-0.5, 0.5]
@@ -342,6 +361,7 @@ def generate_large_blur_sequence(frame_paths, output_len=17, base_rate=1):
         t0 = (gs - start) / total_raw - 0.5
         t1 = (gs + 1 - start) / total_raw - 0.5
         intervals.append([t0, t1])
+    intervals += [intervals[-1]] * (output_len - len(intervals))
     output_intervals = torch.tensor(intervals, dtype=torch.float)
 
     # input interval

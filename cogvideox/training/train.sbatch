@@ -7,6 +7,7 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --output=output/slurm-%j.out
 #SBATCH --error=error/slurm-%j.err
+#SBATCH --nodelist=lse-hpcnode[8]
 
 #the signal time needs to be larger than the sleep in the handler function
 

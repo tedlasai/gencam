@@ -662,10 +662,10 @@ def main(args):
 
 
         input_intervals = torch.stack(input_intervals)
-        input_intervals = input_intervals.to(memory_format=torch.contiguous_format).long()
+        input_intervals = input_intervals.to(memory_format=torch.contiguous_format).float() #.long() for GOPRO lol
 
         output_intervals = torch.stack(output_intervals)
-        output_intervals = output_intervals.to(memory_format=torch.contiguous_format).long()
+        output_intervals = output_intervals.to(memory_format=torch.contiguous_format).float() #.long for GOPRO lol
 
         return {
             "file_names": file_names,
@@ -854,6 +854,7 @@ def main(args):
                     input_intervals = transform_intervals(input_intervals, frames_per_latent=4)
                     output_intervals = transform_intervals(output_intervals, frames_per_latent=4)
                     #first interval is always rep
+
                     noisy_model_input, target, condition_mask, intervals = random_insert_latent_frame(image_latent, noisy_model_input, model_input, input_intervals, output_intervals, special_info=args.special_info)
                     
                     for i in range(batch_size):
