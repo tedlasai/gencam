@@ -759,7 +759,6 @@ class CogVideoXPatchEmbedWBlur(nn.Module):
             image_embeds = image_embeds.reshape(-1, channels, height, width)
             image_embeds = self.proj(image_embeds)
             image_embeds = image_embeds.view(batch_size, num_frames, *image_embeds.shape[1:])
-
             image_embeds = image_embeds + information_embedding + condition_embedding #add my blur embeddings here
 
             image_embeds = image_embeds.flatten(3).transpose(2, 3)  # [batch, num_frames, height x width, channels]

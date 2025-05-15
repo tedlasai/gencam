@@ -368,3 +368,112 @@ def generate_large_blur_sequence(frame_paths, window_max=16, output_len=17, base
     input_interval = torch.tensor([[-0.5, 0.5]], dtype=torch.float)
     return blur_img, seq, input_interval, output_intervals
 
+def generate_test_case(frame_paths,
+                       window_max=16,
+                       output_len=17,
+                       in_start=None,
+                       in_end=None,
+                       out_start=None,
+                       out_end = None,
+                       center=None,
+                       mode="1x",
+                       fps=240):
+    """
+    Generate blurred input + a target sequence + normalized intervals.
+
+    Args:
+        frame_paths: list of all frame filepaths
+        window_max: number of groups/bins W
+        output_len: desired length of the output sequence
+        in_start, in_end: integer indices defining the raw window [in_start, in_end)
+        mode: one of "1x", "2x", or "lb"
+        fps: frames-per-second (only used to override mode=="2x" if fps==120)
+
+    Returns:
+        blur_img: np.ndarray of the global blur over the window
+        seq: list of np.ndarray, length = output_len (blured groups or raw frames)
+        input_interval: torch.Tensor [[-0.5, 0.5]]
+        output_intervals: torch.Tensor shape [output_len, 2], normalized in [-0.5,0.5]
+    """
+    # 1) slice and blur
+    raw_paths = frame_paths[in_start:in_end]
+
+    total_raw = len(raw_paths)
+    blur_img = build_blur(raw_paths)
+
+    # 2) build the sequence
+    # one target per frame
+    seq = [
+        np.array(Image.open(p).convert("RGB"), dtype=np.uint8)
+        for p in frame_paths[out_start:out_end]
+    ]
+
+    # 3) compute normalized intervals
+    input_interval = torch.tensor([[-0.5, 0.5]], dtype=torch.float)
+
+    # 2) define the normalizer
+    def normalize(x, in_start, in_end):
+        return (x - in_start) / (in_end - in_start) - 0.5
+    
+    base_rate = 240 // fps
+   
+    # 3) define the raw intervals in absolute frame‐indices
+    base_rate = 240 // fps
+    if mode == "1x":
+        assert in_start == out_start and in_end == out_end
+        assert fps == 240, "haven't implemented 120fps in 1x yet"
+        W = (out_end - out_start) // base_rate
+        # one frame per window
+        group_starts = [out_start + i * base_rate for i in range(W)]
+        group_ends   = [out_start + (i + 1) * base_rate for i in range(W)]
+
+    elif mode == "2x":
+        W = (out_end - out_start) // base_rate
+        # every base_rate frames, starting at out_start
+        group_starts = [out_start + i * base_rate for i in range(W)]
+        group_ends   = [out_start + (i + 1) * base_rate for i in range(W)]
+
+    elif mode == "lb":
+        W = (out_end - out_start) // base_rate
+        # sparse “key‐frame” windows from the raw input range
+        group_starts = [in_start + i * base_rate for i in range(W)]
+        group_ends   = [s + 1 for s in group_starts]
+
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+    # --- after mode‐switch, once you have raw group_starts & group_ends ---
+    # 4) build a summed video sequence by blurring each interval
+    summed_seq = []
+    for s, e in zip(group_starts, group_ends):
+        # make sure indices lie in [in_start, in_end)
+        s_clamped = max(in_start, min(s, in_end-1))
+        e_clamped = max(s_clamped+1,    min(e, in_end))
+        # sum/blur the frames in [s_clamped:e_clamped)
+        summed = build_blur(frame_paths[s_clamped:e_clamped])
+        summed_seq.append(summed)
+
+    # pad to output_len
+    if len(summed_seq) < output_len:
+        summed_seq += [summed_seq[-1]] * (output_len - len(summed_seq))
+
+    # (optional) write out the summed video:
+    # import cv2
+    # h, w, _ = summed_seq[0].shape
+    # writer = cv2.VideoWriter("summed.mp4", cv2.VideoWriter_fourcc(*"mp4v"), fps, (w,h))
+    # for f in summed_seq: writer.write(f)
+    # writer.release()
+
+    # 5) now normalize your intervals as before
+    def normalize(x):
+        return (x - in_start) / (in_end - in_start) - 0.5
+
+    intervals = [[normalize(s), normalize(e)] for s, e in zip(group_starts, group_ends)]
+    num_frames = len(intervals)
+    if len(intervals) < output_len:
+        intervals += [intervals[-1]] * (output_len - len(intervals))
+    len
+    output_intervals = torch.tensor(intervals, dtype=torch.float)
+
+    # final return now also includes summed_seq
+    return blur_img, summed_seq, input_interval, output_intervals, seq, num_frames

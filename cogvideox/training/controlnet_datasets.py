@@ -1,6 +1,7 @@
 import io
 import os
 import glob
+import pickle
 import random
 import time
 
@@ -15,7 +16,7 @@ from decord import VideoReader
 from torch.utils.data.dataset import Dataset
 from controlnet_aux import CannyDetector, HEDdetector
 import torch.nn.functional as F
-from helpers import generate_1x_sequence, generate_2x_sequence, generate_large_blur_sequence
+from helpers import generate_1x_sequence, generate_2x_sequence, generate_large_blur_sequence, generate_test_case
 
 
 def unpack_mm_params(p):
@@ -424,97 +425,173 @@ class FullMotionBlurDataset(BaseClass):
     """
     A dataset that randomly selects among 1×, 2×, or large-blur modes per sample.
     Uses category-specific <split>_list.txt files under each subfolder of FullDataset to assemble sequences.
+    In 'test' split, it instead loads precomputed intervals from intervals_test.pkl and uses generate_test_case.
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        # Assemble sequence directories based on each category's split list
         self.seq_dirs = []
-        #if split is trian, then train, else "test"
-        text_file_name = "train_list.txt" if self.split == "train" else "test_list.txt"
+
+        # TEST split: load fixed intervals early
+        if self.split == 'test':
+            pkl_path = os.path.join(self.data_dir, 'intervals_test.pkl')
+            with open(pkl_path, 'rb') as f:
+                self.test_intervals = pickle.load(f)
+            assert self.test_intervals, f"No test intervals found in {pkl_path}"
+            
+            cleaned_intervals = []
+            for interval in self.test_intervals:
+                # Extract interval values
+                in_start  = interval['in_start']
+                in_end    = interval['in_end']
+                out_start = interval['out_start']
+                out_end   = interval['out_end']
+                center    = interval['center']
+                window    = interval['window_size']
+                mode      = interval['mode']
+                fps       = interval['fps'] # e.g. "lower_fps_frames/720p_240fps_1/frame_00247.png"
+                category, seq = interval['video_name'].split('/')#.split('/')
+                seq_dir = os.path.join(self.data_dir, category, 'lower_fps_frames', seq)
+                frame_paths = sorted(glob.glob(os.path.join(seq_dir, '*.png')))
+                rel_path = os.path.relpath(frame_paths[center], self.data_dir)
+                rel_path = os.path.splitext(rel_path)[0] # remove the file extension
+            # #print("File name: ", file_name)                
+                # Construct filename
+                output_name = (
+                    f"{rel_path}_"
+                    f"in{in_start:04d}_ie{in_end:04d}_"
+                    f"os{out_start:04d}_oe{out_end:04d}_"
+                    f"ctr{center:04d}_win{window:04d}_"
+                    f"fps{fps:04d}_{mode}.mp4"
+                )
+                full_output_path = os.path.join("/datasets/sai/gencam/cogvideox/training/cogvideox-full-sample/deblurred", output_name) #THIS IS A HACK - YOU NEED TO UPDATE THIS TO YOUR OUTPUT DIRECTORY
+
+                # Keep only if output doesn't exist
+                if not os.path.exists(full_output_path):
+                    cleaned_intervals.append(interval)
+            print("Len of test intervals after cleaning: ", len(cleaned_intervals))
+            print("Len of test intervals before cleaning: ", len(self.test_intervals))
+            self.test_intervals = cleaned_intervals
+
+
+        # TRAIN/VAL: build seq_dirs from each category's list or fallback
+        list_file = 'train_list.txt' if self.split == 'train' else 'test_list.txt'
         for category in sorted(os.listdir(self.data_dir)):
             cat_dir = os.path.join(self.data_dir, category)
             if not os.path.isdir(cat_dir):
                 continue
-            list_file = os.path.join(cat_dir, text_file_name)
-            if os.path.isfile(list_file):
-                with open(list_file, 'r') as f:
+            list_path = os.path.join(cat_dir, list_file)
+            if os.path.isfile(list_path):
+                with open(list_path, 'r') as f:
                     for line in f:
                         rel = line.strip()
-                        # Skip empty lines
                         if not rel:
                             continue
                         seq_dir = os.path.join(self.data_dir, rel)
                         if os.path.isdir(seq_dir):
                             self.seq_dirs.append(seq_dir)
             else:
-                # No list file for this category: fallback to scanning all sequences
                 fps_root = os.path.join(cat_dir, 'lower_fps_frames')
                 if os.path.isdir(fps_root):
                     for seq in sorted(os.listdir(fps_root)):
                         seq_path = os.path.join(fps_root, seq)
                         if os.path.isdir(seq_path):
                             self.seq_dirs.append(seq_path)
+
         if self.split == 'val':
-            # Optional: limit validation subset
             self.seq_dirs = self.seq_dirs[:5]
         if self.split == 'train':
-            #duplicate the training set
-            self.seq_dirs = self.seq_dirs * 10
+            self.seq_dirs *= 10
 
-        assert len(self.seq_dirs) > 0, f"No sequences found for split '{self.split}' in {self.data_dir}"
+        assert self.seq_dirs, \
+            f"No sequences found for split '{self.split}' in {self.data_dir}"
 
     def __len__(self):
-        return len(self.seq_dirs)
+        return len(self.test_intervals) if self.split == 'test' else len(self.seq_dirs)
 
     def __getitem__(self, idx):
-        seq_dir = self.seq_dirs[idx]
-        # gather all raw frames (240fps) for this sequence
-        frame_paths = sorted(glob.glob(os.path.join(seq_dir, '*.png')))
-        # pick a mode at random
-        mode = random.choice(['1x', '2x', 'large_blur']) #'2x', 'large_blur'])
-        #randomly choose base_rate
-        
-        if mode == '1x' or len(frame_paths) < 50:
-            base_rate = random.choice([1, 2])
-            blur_img, seq, inp_int, out_int = generate_1x_sequence(
-                frame_paths, window_max = 16, output_len=17, base_rate=base_rate)
-        elif mode == '2x':
-            base_rate = random.choice([1, 2])
-            blur_img, seq, inp_int, out_int = generate_2x_sequence(
-                frame_paths, window_max = 16, output_len=17, base_rate=base_rate)
+        # Prepare base items
+        if self.split == 'test':
+            interval = self.test_intervals[idx]
+            category, seq = interval['video_name'].split('/')
+            seq_dir = os.path.join(self.data_dir, category, 'lower_fps_frames', seq)
+            frame_paths = sorted(glob.glob(os.path.join(seq_dir, '*.png')))
+
+            in_start  = interval['in_start']
+            in_end    = interval['in_end']
+            out_start = interval['out_start']
+            out_end   = interval['out_end']
+            center = interval['center']
+            window = interval['window_size']
+            mode   = interval['mode']
+            fps    = interval['fps']
+
+            # generate test case
+            blur_img, seq_frames, inp_int, out_int, high_fps_video, num_frames = generate_test_case(
+                frame_paths=frame_paths, window_max=window, in_start=in_start, in_end=in_end, out_start=out_start,out_end=out_end, center=center, mode=mode, fps=fps
+            )
+            file_name = frame_paths[center]
+            
         else:
-            # compute the maximum integer base_rate such that output_len * base_rate < num_frames
-            max_base_rate = (len(frame_paths) - 1) // 17
+            seq_dir = self.seq_dirs[idx]
+            frame_paths = sorted(glob.glob(os.path.join(seq_dir, '*.png')))
+            mode = random.choice(['1x', '2x', 'large_blur'])
 
-            #if max_base_rate > 3, then set it to 3
-            max_base_rate = min(max_base_rate, 3)
-            
-            # randomly pick base_rate in [1, max_base_rate]
-            base_rate = random.randint(1, max_base_rate)
-            
-            # randomly choose base_rate such that output_len*base_rate < len(frame_paths)
-            blur_img, seq, inp_int, out_int = generate_large_blur_sequence(
-                frame_paths, window_max = 16, output_len=17, base_rate=base_rate)
+            if mode == '1x' or len(frame_paths) < 50:
+                base_rate = random.choice([1, 2])
+                blur_img, seq_frames, inp_int, out_int = generate_1x_sequence(
+                    frame_paths, window_max=16, output_len=17, base_rate=base_rate
+                )
+            elif mode == '2x':
+                base_rate = random.choice([1, 2])
+                blur_img, seq_frames, inp_int, out_int = generate_2x_sequence(
+                    frame_paths, window_max=16, output_len=17, base_rate=base_rate
+                )
+            else:
+                max_base = min((len(frame_paths) - 1) // 17, 3)
+                base_rate = random.randint(1, max_base)
+                blur_img, seq_frames, inp_int, out_int = generate_large_blur_sequence(
+                    frame_paths, window_max=16, output_len=17, base_rate=base_rate
+                )
+            file_name = frame_paths[0]
+            num_frames = 16
 
-        # Convert to tensors via BaseClass loader
+        # Common conversion and packaging
+        # blur_img is a single frame; wrap in batch dim
         blur_input = self.load_frames(np.expand_dims(blur_img, 0))
-        video = self.load_frames(np.stack(seq, axis=0))
+        # seq_frames is list of frames; stack along time dim
+        video = self.load_frames(np.stack(seq_frames, axis=0))
 
-        print("Got video shape: ", video.shape)
+        
+        relative_file_name = os.path.relpath(file_name, self.data_dir)
+        
+        if self.split == 'test':
+            # Get base directory and frame prefix
+            base_dir = os.path.dirname(relative_file_name)
+            frame_stem = os.path.splitext(os.path.basename(relative_file_name))[0]  # "frame_00000"
 
-        full_fn = os.path.join(seq_dir, frame_paths[0])
+            # Build new filename
+            new_filename = (
+                f"{frame_stem}_"
+                f"in{in_start:04d}_ie{in_end:04d}_"
+                f"os{out_start:04d}_oe{out_end:04d}_"
+                f"ctr{center:04d}_win{window:04d}_"
+                f"fps{fps:04d}_{mode}.png"
+            )
 
-        print("input interval: ", inp_int)
-        print("output interval: ", out_int)
-
+            # Final path
+            relative_file_name = os.path.join(base_dir, new_filename)
+        
         data = {
-            'file_name': os.path.relpath(full_fn, self.data_dir),
-            'blur_img': blur_input,
-            'video': video,
-            'caption': "",
-            'mode': mode,
-            'input_interval': inp_int,
+            'file_name': relative_file_name,
+            'blur_img':  blur_input,
+            'num_frames': num_frames,
+            'video':     video,
+            'caption':   "",
+            'mode':      mode,
+            'input_interval':  inp_int,
             'output_interval': out_int,
         }
+        if self.split == 'test':
+            high_fps_video = self.load_frames(np.stack(high_fps_video, axis=0))
+            data['high_fps_video'] = high_fps_video
         return data

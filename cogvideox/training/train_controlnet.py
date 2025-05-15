@@ -648,8 +648,15 @@ def main(args):
     def collate_fn(examples):
         blur_img = [example["blur_img"] for example in examples]
         videos = [example["video"] for example in examples]
+        if "high_fps_video" in examples[0]:
+            high_fps_videos = [example["high_fps_video"] for example in examples]
+            high_fps_videos = torch.stack(high_fps_videos)
+            high_fps_videos = high_fps_videos.to(memory_format=torch.contiguous_format).float()
         prompts = [example["caption"] for example in examples]
         file_names = [example["file_name"] for example in examples]
+        num_frames = [example["num_frames"] for example in examples]
+        # if full_file_names in examples[0]:
+        #     full_file_names = [example["full_file_name"] for example in examples]
         input_intervals = [example["input_interval"] for example in examples]
         output_intervals = [example["output_interval"] for example in examples]
 
@@ -667,14 +674,20 @@ def main(args):
         output_intervals = torch.stack(output_intervals)
         output_intervals = output_intervals.to(memory_format=torch.contiguous_format).float() #.long for GOPRO lol
 
-        return {
+        out_dict = {
             "file_names": file_names,
             "blur_img": blur_img,
             "videos": videos,
+            
+            "num_frames": num_frames,
             "prompts": prompts,
             "input_intervals": input_intervals,
             "output_intervals": output_intervals,
         }
+
+        if "high_fps_video" in examples[0]:
+            out_dict["high_fps_video"] = high_fps_videos
+        return out_dict
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -893,7 +906,8 @@ def main(args):
                         #accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     if accelerator.state.deepspeed_plugin is None:
-                        optimizer.step()
+                        if not args.just_validate:
+                            optimizer.step()
                         optimizer.zero_grad()
 
                     lr_scheduler.step()
@@ -959,7 +973,8 @@ def main(args):
                         frame = ((batch["blur_img"][0].permute(0,2,3,1).cpu().numpy() + 1)*127.5).astype(np.uint8)
 
 
-                        print("frame shape", frame.shape)
+
+                        
                     
                         pipeline_args = {
                             "prompt": "",
@@ -982,10 +997,14 @@ def main(args):
                             modified_filenames.append(os.path.splitext(file)[0] + ".mp4")
                             print("Modified file name", modified_filenames[0])
 
+                        print("Output intervals", batch["output_intervals"][0:1])
+                        
+                        num_frames = batch["num_frames"][0]
                         #save the gt_video output
                         if args.dataset not in ["outsidephotos"]:
                             gt_video = batch["videos"][0].permute(0,2,3,1).cpu().numpy()
                             gt_video = ((gt_video + 1) * 127.5)/255
+                            gt_video = gt_video[0:num_frames]
                             
                             for file in modified_filenames:
                                 #create the directory if it does not exist
@@ -994,6 +1013,13 @@ def main(args):
                                 print("GT file name", gt_file_name)
                                 os.makedirs(os.path.dirname(gt_file_name), exist_ok=True)
                                 export_to_video(gt_video, gt_file_name, fps=20)
+
+                                if "high_fps_video" in batch:
+                                    high_fps_video = batch["high_fps_video"][0].permute(0,2,3,1).cpu().numpy()
+                                    high_fps_video = ((high_fps_video + 1) * 127.5)/255
+                                    gt_file_name = os.path.join(args.output_dir, "gt_highfps", modified_filenames[0])
+                                    os.makedirs(os.path.dirname(gt_file_name), exist_ok=True)
+                                    export_to_video(high_fps_video, gt_file_name, fps=20)
                         
                         if args.dataset in ["adobe", "full"]:
                             for file in modified_filenames:
@@ -1003,6 +1029,7 @@ def main(args):
                                 #save the blurry image
                                 os.makedirs(os.path.dirname(blurry_file_name), exist_ok=True)
                                 Image.fromarray(frame[0]).save(blurry_file_name)
+
                             
 
                         videos = log_validation(
@@ -1012,6 +1039,7 @@ def main(args):
                             pipeline_args=pipeline_args,
                             epoch=epoch,
                         )
+                        
 
                         for i, video in enumerate(videos):
                             prompt = (
@@ -1022,10 +1050,13 @@ def main(args):
                                 .replace('"', "_")
                                 .replace("/", "_")
                             )
+                            video = video[0:num_frames]
                             filename = os.path.join(args.output_dir, "deblurred", modified_filenames[0])
                             print("Deblurred file name", filename)
                             os.makedirs(os.path.dirname(filename), exist_ok=True)
                             export_to_video(video, filename, fps=20)
+
+                            accelerator.wait_for_everyone()
 
                 if args.just_validate:
                     exit(0)
