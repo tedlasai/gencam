@@ -58,7 +58,7 @@ from diffusers.utils import check_min_version, export_to_video, is_wandb_availab
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.torch_utils import is_compiled_module
 
-from controlnet_datasets import AdobeMotionBlurDataset, FullMotionBlurDataset, OutsidePhotosDataset, GoProMotionBlurDataset
+from controlnet_datasets import AdobeMotionBlurDataset, FullMotionBlurDataset, OutsidePhotosDataset, GoProMotionBlurDataset, BAISTDataset
 from controlnet_pipeline import ControlnetCogVideoXPipeline
 from cogvideo_transformer import CogVideoXTransformer3DModel
 from cogvideo_controlnet import CogVideoXControlnet
@@ -549,6 +549,15 @@ def main(args):
             sample_n_frames=args.max_num_frames,
             hflip_p=args.hflip_p,
         )
+    elif args.dataset == "baist":
+        train_dataset = BAISTDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = "train",
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        ) #this is not called for now
 
     if args.dataset == "adobe":
         val_dataset = AdobeMotionBlurDataset(
@@ -580,6 +589,15 @@ def main(args):
         )
     elif args.dataset == "full":
         val_dataset = FullMotionBlurDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = args.val_split,
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
+    elif args.dataset == "baist":
+        val_dataset = BAISTDataset(
             data_dir=os.path.join(args.base_dir, args.video_root_dir),
             split = args.val_split,
             image_size=(args.height, args.width), 
@@ -1021,7 +1039,7 @@ def main(args):
                                     os.makedirs(os.path.dirname(gt_file_name), exist_ok=True)
                                     export_to_video(high_fps_video, gt_file_name, fps=20)
                         
-                        if args.dataset in ["adobe", "full"]:
+                        if args.dataset in ["adobe", "full", "baist"]:
                             for file in modified_filenames:
                                 #create the directory if it does not exist
                                 blurry_file_name = os.path.join(args.output_dir, "blurry", modified_filenames[0].replace(".mp4", ".png"))

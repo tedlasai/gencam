@@ -595,3 +595,111 @@ class FullMotionBlurDataset(BaseClass):
             high_fps_video = self.load_frames(np.stack(high_fps_video, axis=0))
             data['high_fps_video'] = high_fps_video
         return data
+
+
+class BAISTDataset(BaseClass):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        allowed_folders =  {
+            "gWA_sBM_c01_d26_mWA0_ch06_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch01_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch04_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch05_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch08_cropped_32X": None,
+            "gWA_sBM_c01_d26_mWA0_ch02_cropped_32X": None,
+            "gJS_sBM_c01_d02_mJS0_ch08_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch07_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch06_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch03_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch05_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch02_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch03_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch09_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch10_cropped_32X": None,
+            "gWA_sBM_c01_d26_mWA0_ch10_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch06_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch08_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch06_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch10_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch09_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch02_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch04_cropped_32X": None,
+            "gPO_sBM_c01_d10_mPO0_ch09_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch01_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch07_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch03_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch04_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch02_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch01_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch05_cropped_32X": None,
+            "gPO_sBM_c01_d10_mPO0_ch10_cropped_32X": None,
+        }
+        def collect_blur_images(root_dir, allowed_folders, skip_start=40, skip_end=40):
+            blur_image_paths = []
+
+            for dirpath, dirnames, filenames in os.walk(root_dir):
+                if os.path.basename(dirpath) == "blur":
+                    parent_folder = os.path.basename(os.path.dirname(dirpath))
+                    if parent_folder in allowed_folders:
+                        # Filter and sort valid image filenames
+                        valid_files = [
+                            f for f in filenames
+                            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff')) and os.path.splitext(f)[0].isdigit()
+                        ]
+                        valid_files.sort(key=lambda x: int(os.path.splitext(x)[0]))
+
+                        # Skip first and last N files
+                        middle_files = valid_files[skip_start:len(valid_files) - skip_end]
+
+                        for f in middle_files:
+                            blur_image_paths.append(os.path.join(dirpath, f))
+
+            return blur_image_paths
+
+    
+        self.image_paths = collect_blur_images(self.data_dir, allowed_folders)
+        self.length = len(self.image_paths)
+
+    def __len__(self):
+        return self.length
+    
+    
+    def __getitem__(self, idx):
+        image_path = self.image_paths[idx]
+        blur_img_original = load_as_srgb(image_path)
+        H,W = blur_img_original.size
+        blur_img =blur_img_original.resize((self.image_size[1], self.image_size[0])) #cause pil is width, height
+        blur_np = np.array([blur_img])
+
+        base_dir = os.path.dirname(os.path.dirname(image_path))  # strip /blur
+        filename = os.path.splitext(os.path.basename(image_path))[0]  # '00000000'
+        sharp_dir = os.path.join(base_dir, "sharp")
+
+        frame_paths = [
+            os.path.join(sharp_dir, f"{filename}_{i:03d}.png")
+            for i in range(7)
+        ]
+
+
+        _, seq_frames, inp_int, out_int, high_fps_video, num_frames = generate_test_case(
+                        frame_paths=frame_paths, window_max=7, in_start=0, in_end=7, out_start=0,out_end=7, center=3, mode="1x", fps=240
+                    )
+    
+        pixel_values = self.load_frames(np.stack(seq_frames, axis=0))
+        blur_pixel_values = self.load_frames(blur_np)
+
+        relative_file_name = os.path.relpath(image_path, self.data_dir)
+
+    
+        data = {
+            'file_name': relative_file_name,
+            'blur_img': blur_pixel_values,
+            'video': pixel_values,
+            'caption': "",
+            'input_interval': inp_int,
+            'output_interval': out_int,
+            "num_frames": num_frames,
+            'mode':  "1x",
+        }
+        return data
