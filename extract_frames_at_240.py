@@ -24,8 +24,21 @@ def process_video(video_path, output_root):
         frames.append(frame)
         frame_idx += 1
 
+        
         if len(frames) == 8:
-            summed_frame = np.clip(np.sum(frames, axis=0) / 8, 0, 255).astype(np.uint8)
+            # stack into shape (8, H, W, C), normalize to [0,1]
+            arr = np.stack(frames).astype(np.float32) / 255.0
+
+            # 1) linearize with γ≈2.2
+            lin = arr ** 2.2
+
+            # 2) average in linear space
+            avg_lin = lin.mean(axis=0)
+
+            # 3) re‐encode with γ≈1/2.2 and back to uint8
+            summed_frame = np.clip((avg_lin ** (1/2.2)) * 255.0, 0, 255).astype(np.uint8)
+
+            # write out
             frame_filename = os.path.join(frames_dir, f"frame_{saved_idx:05d}.png")
             cv2.imwrite(frame_filename, summed_frame)
             saved_idx += 1

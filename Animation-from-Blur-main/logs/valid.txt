@@ -1,0 +1,10 @@
+[valid] 2025/05/15, 02:11:57 - eval time: 185.20944118499756 sec, psnr: 19.96254, ssim: 0.85950, lpips: 0.0890
+[valid max.] 2025/05/15, 02:11:57 - eval time: 185.2094 sec, psnr: 22.3009, ssim: 0.9000, lpips: 0.0682
+[valid] 2025/05/15, 22:41:33 - eval time: 4.827841758728027 sec, psnr: 24.44992, ssim: 0.79014, lpips: 0.2415
+[valid max.] 2025/05/15, 22:41:33 - eval time: 4.8278 sec, psnr: 24.4513, ssim: 0.7902, lpips: 0.2415
+[valid] 2025/05/15, 22:53:29 - eval time: 684.4815051555634 sec, psnr: 25.35862, ssim: 0.81796, lpips: 0.1908
+[valid max.] 2025/05/15, 22:53:29 - eval time: 684.4815 sec, psnr: 25.3629, ssim: 0.8181, lpips: 0.1908
+[valid] 2025/05/16, 01:46:37 - eval time: 1356.5717594623566 sec, psnr: 19.90848, ssim: 0.85947, lpips: 0.0874
+[valid max.] 2025/05/16, 01:46:37 - eval time: 1356.5718 sec, psnr: 22.0811, ssim: 0.8967, lpips: 0.0680
+[valid] 2025/05/16, 03:25:34 - eval time: 1167.4658508300781 sec, psnr: 19.90848, ssim: 0.85947, lpips: 0.0874
+[valid max.] 2025/05/16, 03:25:34 - eval time: 1167.4659 sec, psnr: 22.0811, ssim: 0.8967, lpips: 0.0680
