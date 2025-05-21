@@ -15,13 +15,19 @@ def preprocess_frame(img):
     Preprocess a frame tensor of shape [H, W, 3] to [1, 3, H, W],
     ensuring size is divisible by 8 as required by RAFT.
     """
+    print("Preprocessing frame...yeuh", img.shape)
+    print("Torch max:", torch.max(img))
     if torch.max(img) > 1.0:
+        print("HERE")
         img = img / 255.0  # Ensure it's in [0, 1] range
         
+    print("Original image shape:", img.shape)
     img = img.permute(2, 0, 1)  # [3, H, W]
     h, w = img.shape[1], img.shape[2]
     h, w = h // 8 * 8, w // 8 * 8
+    print("Resizing to:", h, w)
     img = resize(img, [h, w])
+    print("Resized image shape:", img.shape)
     return img.unsqueeze(0) # [1, 3, H, W]
 
 
@@ -30,10 +36,17 @@ _raft_lock = threading.Lock()
 
 def estimate_flow(img1, img2):
     with torch.no_grad():
+        print("img1 shape:", img1.shape)
         img1 = preprocess_frame(img1)
         img2 = preprocess_frame(img2)
+
+        print("img1 shape after preprocessing:", img1.shape)
+
+        # ensure only one forward‐pass at a time
+        print("Estimating flow...")
         with _raft_lock:
-            flow = raft_model(img1.cuda(), img2.cuda())[-1]  # [1, 2, H, W]
+            flow = raft_model(img1, img2)[-1]  # [1, 2, H, W]
+        print("Flow estimated.")
 
         # Convert flow to pixel units (if you need to)
         # _, _, H, W = flow.shape
@@ -52,11 +65,13 @@ def compute_bidirectional_epe(gen_first, gen_last, gt_first, gt_last, per_pixel_
     against GT forward flow.
     """
     # Estimate flows
+    print("Over here")
     flow_gen_fw = estimate_flow(gen_first, gen_last)
 
     flow_gen_bw = estimate_flow(gen_last, gen_first)
     flow_gt = estimate_flow(gt_first, gt_last)
 
+    print("Flows estimated.")
 
     # Resize predicted flows to match GT flow resolution
     target_size = flow_gt.shape[-2:]
