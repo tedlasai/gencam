@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --output=output/slurm-%j.out
 #SBATCH --error=error/slurm-%j.err
-#SBATCH --exclude=lse-hpcnode7
+#SBATCH --exclude=lse-hpcnode9
 # prepare your environment here
 source ~/.bashrc
 conda activate gencam

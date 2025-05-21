@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 
+import cv2
 import yaml
 
 sys.path.append('..')
@@ -58,7 +59,7 @@ from diffusers.utils import check_min_version, export_to_video, is_wandb_availab
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.torch_utils import is_compiled_module
 
-from controlnet_datasets import AdobeMotionBlurDataset, FullMotionBlurDataset, OutsidePhotosDataset, GoProMotionBlurDataset, BAISTDataset
+from controlnet_datasets import AdobeMotionBlurDataset, FullMotionBlurDataset, GoPro2xMotionBlurDataset, GoProLargeMotionBlurDataset, OutsidePhotosDataset, GoProMotionBlurDataset, BAISTDataset, SimpleBAISTDataset
 from controlnet_pipeline import ControlnetCogVideoXPipeline
 from cogvideo_transformer import CogVideoXTransformer3DModel
 from cogvideo_controlnet import CogVideoXControlnet
@@ -540,6 +541,24 @@ def main(args):
             sample_n_frames=args.max_num_frames,
             hflip_p=args.hflip_p,
         )
+    elif args.dataset == "gopro2x":
+        train_dataset = GoPro2xMotionBlurDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = "train",
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
+    elif args.dataset == "goprolarge":
+        train_dataset = GoProLargeMotionBlurDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = "train",
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
     elif args.dataset == "full":
         train_dataset = FullMotionBlurDataset(
             data_dir=os.path.join(args.base_dir, args.video_root_dir),
@@ -558,6 +577,15 @@ def main(args):
             sample_n_frames=args.max_num_frames,
             hflip_p=args.hflip_p,
         ) #this is not called for now
+    elif args.dataset == "simplebaist":
+        train_dataset = SimpleBAISTDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = "train",
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
 
     if args.dataset == "adobe":
         val_dataset = AdobeMotionBlurDataset(
@@ -587,6 +615,24 @@ def main(args):
             sample_n_frames=args.max_num_frames,
             hflip_p=args.hflip_p,
         )
+    elif args.dataset == "gopro2x":
+        val_dataset = GoPro2xMotionBlurDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = args.val_split,
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
+    elif args.dataset == "goprolarge":
+        val_dataset = GoProLargeMotionBlurDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = args.val_split,
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
     elif args.dataset == "full":
         val_dataset = FullMotionBlurDataset(
             data_dir=os.path.join(args.base_dir, args.video_root_dir),
@@ -605,7 +651,15 @@ def main(args):
             sample_n_frames=args.max_num_frames,
             hflip_p=args.hflip_p,
         )
-    
+    elif args.dataset == "simplebaist":
+        val_dataset = SimpleBAISTDataset(
+            data_dir=os.path.join(args.base_dir, args.video_root_dir),
+            split = args.val_split,
+            image_size=(args.height, args.width), 
+            stride=(args.stride_min, args.stride_max),
+            sample_n_frames=args.max_num_frames,
+            hflip_p=args.hflip_p,
+        )
         
     def encode_video(video):
         video = video.to(accelerator.device, dtype=vae.dtype)
@@ -670,6 +724,10 @@ def main(args):
             high_fps_videos = [example["high_fps_video"] for example in examples]
             high_fps_videos = torch.stack(high_fps_videos)
             high_fps_videos = high_fps_videos.to(memory_format=torch.contiguous_format).float()
+        if "bbx" in examples[0]:
+            bbx = [example["bbx"] for example in examples]
+            bbx = torch.stack(bbx)
+            bbx = bbx.to(memory_format=torch.contiguous_format).float()
         prompts = [example["caption"] for example in examples]
         file_names = [example["file_name"] for example in examples]
         num_frames = [example["num_frames"] for example in examples]
@@ -705,6 +763,8 @@ def main(args):
 
         if "high_fps_video" in examples[0]:
             out_dict["high_fps_video"] = high_fps_videos
+        if "bbx" in examples[0]:
+            out_dict["bbx"] = bbx
         return out_dict
 
     train_dataloader = DataLoader(
@@ -1030,6 +1090,11 @@ def main(args):
                                 gt_file_name = os.path.join(args.output_dir, "gt", modified_filenames[0])
                                 print("GT file name", gt_file_name)
                                 os.makedirs(os.path.dirname(gt_file_name), exist_ok=True)
+                                if args.dataset in ["baist", "simplebaist"]:
+                                    bbox = batch["bbx"][0].cpu().numpy().astype(np.int32)
+                                    gt_video = gt_video[:, bbox[1]:bbox[3], bbox[0]:bbox[2], :]
+                                    #resize to  192x160
+                                    gt_video = np.array([cv2.resize(frame, (160, 192)) for frame in gt_video])
                                 export_to_video(gt_video, gt_file_name, fps=20)
 
                                 if "high_fps_video" in batch:
@@ -1039,14 +1104,21 @@ def main(args):
                                     os.makedirs(os.path.dirname(gt_file_name), exist_ok=True)
                                     export_to_video(high_fps_video, gt_file_name, fps=20)
                         
-                        if args.dataset in ["adobe", "full", "baist"]:
+                        if args.dataset in ["adobe", "full", "baist", "outsidephotos", "gopro2x", "goprolarge", "simplebaist"]:
                             for file in modified_filenames:
                                 #create the directory if it does not exist
                                 blurry_file_name = os.path.join(args.output_dir, "blurry", modified_filenames[0].replace(".mp4", ".png"))
                                 print("Blurry file name", blurry_file_name)
                                 #save the blurry image
                                 os.makedirs(os.path.dirname(blurry_file_name), exist_ok=True)
-                                Image.fromarray(frame[0]).save(blurry_file_name)
+                                if args.dataset in ["baist", "simplebaist"]:
+                                    bbox = batch["bbx"][0].cpu().numpy().astype(np.int32)
+                                    frame0 = frame[0][bbox[1]:bbox[3], bbox[0]:bbox[2], :]
+                                    #resize to  192x160
+                                    frame0 = cv2.resize(frame0, (160, 192)) 
+                                    Image.fromarray(frame0).save(blurry_file_name)
+                                else:
+                                    Image.fromarray(frame[0]).save(blurry_file_name)
 
                             
 
@@ -1072,6 +1144,11 @@ def main(args):
                             filename = os.path.join(args.output_dir, "deblurred", modified_filenames[0])
                             print("Deblurred file name", filename)
                             os.makedirs(os.path.dirname(filename), exist_ok=True)
+                            if args.dataset in ["baist", "simplebaist"]:
+                                bbox = batch["bbx"][0].cpu().numpy().astype(np.int32)
+                                video = video[:, bbox[1]:bbox[3], bbox[0]:bbox[2], :]
+                                #resize to  192x160
+                                video = np.array([cv2.resize(frame, (160, 192)) for frame in video])
                             export_to_video(video, filename, fps=20)
 
                             accelerator.wait_for_everyone()

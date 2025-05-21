@@ -1,6 +1,7 @@
 import io
 import os
 import glob
+from pathlib import Path
 import pickle
 import random
 import time
@@ -143,46 +144,7 @@ def load_as_srgb(path):
 #         pixel_values, controlnet_video = self.load_video_info(video_path)
 #         return pixel_values, caption, controlnet_video
 
-class OutsidePhotosDataset(BaseClass):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.image_paths = sorted(glob.glob(os.path.join(self.data_dir, '*.*')))
-        self.length = len(self.image_paths)
 
-    def __len__(self):
-        return self.length
-    
-
-
-        return np.array(img)
-    
-    def __getitem__(self, idx):
-        image_path = self.image_paths[idx]
-        blur_img_original = load_as_srgb(image_path)
-        H,W = blur_img_original.size
-        blur_img =blur_img_original.resize((self.image_size[1], self.image_size[0])) #cause pil is width, height
-        blur_np = np.array([blur_img])
-
-        # Create a black video sequence of same size (window_size = 9)
-        window_size = 9
-        black_images = np.array([Image.new("RGB", self.image_size, (0, 0, 0)) for _ in range(window_size)])
-        intervals = np.array([[i, i+1] for i in range(window_size)])
-
-        pixel_values = self.load_frames(black_images)
-        blur_pixel_values = self.load_frames(blur_np)
-
-        file_name = os.path.join("outside_photos", os.path.basename(image_path))
-
-        data = {
-            'file_name': file_name,
-            "original_size": (H, W),
-            'blur_img': torch.tensor(blur_pixel_values, dtype=torch.float32),
-            'video': torch.tensor(pixel_values, dtype=torch.float32),
-            'caption': "",
-            'input_interval': torch.tensor([[0, 9]]),
-            'output_interval': torch.tensor(intervals),
-        }
-        return data
     
 
 class AdobeMotionBlurDataset(BaseClass):
@@ -418,9 +380,129 @@ class GoProMotionBlurDataset(BaseClass):
             'motion_blur_amount': torch.tensor(self.half_window, dtype=torch.long),
             'input_interval': self.input_interval,
             'output_interval': self.output_interval,
+            "num_frames": self.window_size,
+            "mode": "1x",
         }
         return data
+class OutsidePhotosDataset(BaseClass):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.image_paths = sorted(glob.glob(os.path.join(self.data_dir, '*.*')))
+        INTERVALS = [{"in_start": 0, "in_end": 4, "out_start": 0, "out_end": 4, "center": 2, "window_size": 4, "mode": "1x", "fps": 240},
+                    {"in_start": 0, "in_end": 8, "out_start": 0, "out_end": 8, "center": 4, "window_size": 8, "mode": "1x", "fps": 240},
+                    {"in_start": 0, "in_end": 12, "out_start": 0, "out_end": 12, "center": 6, "window_size": 12, "mode": "1x", "fps": 240},
+                    {"in_start": 0, "in_end": 16, "out_start": 0, "out_end": 16, "center": 8, "window_size": 16, "mode": "1x", "fps": 240},
+                    {"in_start": 4, "in_end": 12, "out_start": 0, "out_end": 16, "center": 8, "window_size": 16, "mode": "2x", "fps": 240},
+                    {"in_start": 0, "in_end": 32, "out_start": 0, "out_end": 32, "center": 12, "window_size": 32, "mode": "lb", "fps": 120},
+                    {"in_start": 0, "in_end": 48, "out_start": 0, "out_end": 48, "center": 24, "window_size": 48, "mode": "lb", "fps": 80}]
+                    
 
+        self.cleaned_intervals = []
+        for image_path in self.image_paths:
+            for interval in INTERVALS:
+                #create a copy of the interval dictionary
+                i = interval.copy()
+                #add the image path to the interval dictionary
+                i['video_name'] = image_path #FIX THIS
+                video_name = i['video_name']
+                in_start  = i['in_start']
+                in_end    = i['in_end']
+                out_start = i['out_start']
+                out_end   = i['out_end']
+                center    = i['center']
+                window    = i['window_size']
+                mode      = i['mode']
+                fps       = i['fps'] # e.g. "lower_fps_frames/720p_240fps_1/frame_00247.png"
+
+                # Get base directory and frame prefix
+                vid_name_w_extension = os.path.basename(video_name).split('.')[0]
+
+                output_name = (
+                    f"{vid_name_w_extension}_"
+                    f"in{in_start:04d}_ie{in_end:04d}_"
+                    f"os{out_start:04d}_oe{out_end:04d}_"
+                    f"ctr{center:04d}_win{window:04d}_"
+                    f"fps{fps:04d}_{mode}.mp4"
+                )
+
+                full_output_path = os.path.join("/datasets/sai/gencam/cogvideox/training/cogvideox-outsidephotos/deblurred", output_name) #THIS IS A HACK - YOU NEED TO UPDATE THIS TO YOUR OUTPUT DIRECTORY
+
+                # Keep only if output doesn't exist
+                if not os.path.exists(full_output_path):
+                    self.cleaned_intervals.append(i)
+
+
+        self.length = len(self.cleaned_intervals)
+
+    def __len__(self):
+        return self.length
+    
+    def __getitem__(self, idx):
+
+        interval = self.cleaned_intervals[idx]
+
+        in_start  = interval['in_start']
+        in_end    = interval['in_end']
+        out_start = interval['out_start']
+        out_end   = interval['out_end']
+        center = interval['center']
+        window = interval['window_size']
+        mode   = interval['mode']
+        fps    = interval['fps']
+
+
+        image_path = interval['video_name']
+        blur_img_original = load_as_srgb(image_path)
+        H,W = blur_img_original.size
+
+
+
+        frame_paths = []
+        #replicate frame_paths to 100 frames
+        frame_paths = ["/datasets/sai/gencam/soccerballs/still.png" for _ in range(window)] #any random path replicated
+
+        # generate test case
+        _, seq_frames, inp_int, out_int, high_fps_video, num_frames = generate_test_case(
+            frame_paths=frame_paths, window_max=window, in_start=in_start, in_end=in_end, out_start=out_start,out_end=out_end, center=center, mode=mode, fps=fps
+        )
+        file_name = image_path
+
+        # Get base directory and frame prefix
+        relative_file_name = os.path.relpath(file_name, self.data_dir)
+        base_dir = os.path.dirname(relative_file_name)
+        frame_stem = os.path.splitext(os.path.basename(file_name))[0]  # "frame_00000"
+        # Build new filename
+        new_filename = (
+            f"{frame_stem}_"
+            f"in{in_start:04d}_ie{in_end:04d}_"
+            f"os{out_start:04d}_oe{out_end:04d}_"
+            f"ctr{center:04d}_win{window:04d}_"
+            f"fps{fps:04d}_{mode}.png"
+        )
+
+        blur_img =blur_img_original.resize((self.image_size[1], self.image_size[0])) #cause pil is width, height
+
+        # Final path
+        relative_file_name = os.path.join(base_dir, new_filename)
+
+
+        blur_input = self.load_frames(np.expand_dims(blur_img, 0).copy())
+        # seq_frames is list of frames; stack along time dim
+        video = self.load_frames(np.stack(seq_frames, axis=0))
+
+
+        data = {
+            'file_name': relative_file_name,
+            "original_size": (H, W),
+            'blur_img': blur_input,
+            'video': video,
+            'caption': "",
+            'input_interval': inp_int,
+            'output_interval': out_int,
+            "num_frames": num_frames,
+        }
+        return data
+    
 class FullMotionBlurDataset(BaseClass):
     """
     A dataset that randomly selects among 1×, 2×, or large-blur modes per sample.
@@ -601,7 +683,8 @@ class BAISTDataset(BaseClass):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        allowed_folders =  {
+      
+        test_folders =  {
             "gWA_sBM_c01_d26_mWA0_ch06_cropped_32X": None,
             "gBR_sBM_c01_d05_mBR0_ch01_cropped_32X": None,
             "gMH_sBM_c01_d22_mMH0_ch04_cropped_32X": None,
@@ -635,13 +718,14 @@ class BAISTDataset(BaseClass):
             "gMH_sBM_c01_d22_mMH0_ch05_cropped_32X": None,
             "gPO_sBM_c01_d10_mPO0_ch10_cropped_32X": None,
         }
+
         def collect_blur_images(root_dir, allowed_folders, skip_start=40, skip_end=40):
             blur_image_paths = []
 
             for dirpath, dirnames, filenames in os.walk(root_dir):
                 if os.path.basename(dirpath) == "blur":
                     parent_folder = os.path.basename(os.path.dirname(dirpath))
-                    if parent_folder in allowed_folders:
+                    if (self.split in ["test", "val"] and parent_folder in test_folders) or (self.split in "train" and parent_folder not in test_folders):
                         # Filter and sort valid image filenames
                         valid_files = [
                             f for f in filenames
@@ -653,12 +737,30 @@ class BAISTDataset(BaseClass):
                         middle_files = valid_files[skip_start:len(valid_files) - skip_end]
 
                         for f in middle_files:
-                            blur_image_paths.append(os.path.join(dirpath, f))
+                            from pathlib import Path
+                            full_path = Path(os.path.join(dirpath, f))
+                            full_output_path = Path("/datasets/sai/gencam/cogvideox/training/cogvideox-baist-test-crop-landscape/deblurred", *full_path.parts[-3:]).with_suffix(".mp4")
+                            if not os.path.exists(full_output_path):
+                                blur_image_paths.append(os.path.join(dirpath, f))
 
             return blur_image_paths
 
     
-        self.image_paths = collect_blur_images(self.data_dir, allowed_folders)
+        self.image_paths = collect_blur_images(self.data_dir, test_folders)
+        #if bbx path does not exist, remove the image path
+        self.image_paths = [path for path in self.image_paths if os.path.exists(path.replace("blur", "blur_anno").replace(".png", ".pkl"))]
+
+        filtered_image_paths = []
+        for blur_path in self.image_paths:
+            base_dir = blur_path.replace('/blur/', '/sharp/').replace('.png', '')
+            sharp_paths = [f"{base_dir}_{i:03d}.png" for i in range(7)]
+            if all(os.path.exists(p) for p in sharp_paths):
+                filtered_image_paths.append(blur_path)
+        self.image_paths = filtered_image_paths
+
+        if self.split == 'val':
+            # Optional: limit validation subset
+            self.image_paths = self.image_paths[:4]
         self.length = len(self.image_paths)
 
     def __len__(self):
@@ -668,9 +770,82 @@ class BAISTDataset(BaseClass):
     def __getitem__(self, idx):
         image_path = self.image_paths[idx]
         blur_img_original = load_as_srgb(image_path)
-        H,W = blur_img_original.size
-        blur_img =blur_img_original.resize((self.image_size[1], self.image_size[0])) #cause pil is width, height
+        def get_optimal_crop(bbx, image_w, image_h):
+            bbx = np.array(bbx, dtype=np.float32)
+            aspect_ratio = 16 / 9.0
+
+            bbx_w = bbx[2] - bbx[0]
+            bbx_h = bbx[3] - bbx[1]
+            center_x = (bbx[0] + bbx[2]) / 2.0
+            center_y = (bbx[1] + bbx[3]) / 2.0
+
+            # First, try ideal 16:9 crop that just contains the bbox
+            crop_w = max(bbx_w, aspect_ratio * bbx_h)
+            crop_h = crop_w / aspect_ratio
+
+            # Position the crop centered on the bbox
+            crop_x_min = center_x - crop_w / 2.0
+            crop_y_min = center_y - crop_h / 2.0
+            crop_x_max = center_x + crop_w / 2.0
+            crop_y_max = center_y + crop_h / 2.0
+
+            # If the 16:9 crop fits within image boundaries, return it
+            if (crop_x_min >= 0 and crop_y_min >= 0 and
+                crop_x_max <= image_w and crop_y_max <= image_h):
+                return np.array([crop_x_min, crop_y_min, crop_x_max, crop_y_max], dtype=np.float32).astype(np.uint32)
+
+            # Otherwise, reduce crop height to fit inside image while still containing bbox
+            # Keep width fixed (so bbox fits), reduce height until it fits vertically
+            crop_h = min(crop_h, 2.0 * min(center_y, image_h - center_y))
+            crop_y_min = center_y - crop_h / 2.0
+            crop_y_max = center_y + crop_h / 2
+
+            # Recalculate crop box
+            crop_box = np.array([center_x - crop_w / 2.0, crop_y_min,
+                                center_x + crop_w / 2.0, crop_y_max], dtype=np.float32)
+
+            # Clamp horizontally if necessary
+            if crop_box[0] < 0:
+                shift = -crop_box[0]
+                crop_box[0] = 0
+                crop_box[2] = min(crop_box[2] + shift, image_w)
+            elif crop_box[2] > image_w:
+                shift = crop_box[2] - image_w
+                crop_box[2] = image_w
+                crop_box[0] = max(crop_box[0] - shift, 0)
+
+            # Final check: still must contain bbox
+            if not (crop_box[0] <= bbx[0] and crop_box[1] <= bbx[1] and
+                    crop_box[2] >= bbx[2] and crop_box[3] >= bbx[3]):
+                return bbx.astype(np.uint32)  # fallback if impossible
+
+            return crop_box.astype(np.uint32)
+
+        bbx_path = image_path.replace("blur", "blur_anno").replace(".png", ".pkl")
+        
+        #load the bbx path
+        bbx = np.load(bbx_path, allow_pickle=True)['bbox'][0:4]
+        # Final crop box
+        crop_box = get_optimal_crop(bbx, image_w=blur_img_original.size[0], image_h=blur_img_original.size[1]) #np.array([crop_x_min, crop_y_min, crop_x_max, crop_y_max], dtype=np.float32).astype(np.uint32)
+        adjusted_bbx = bbx - np.array([crop_box[0], crop_box[1], crop_box[0], crop_box[1]], dtype=np.float32)
+        #turn crop_box into tupel
+        print("Crop box: ", crop_box, "File name: ", image_path, "Blur image size: ", blur_img_original.size)
+        
+        cropped_original = blur_img_original.crop(tuple(crop_box))
+        W,H = cropped_original.size
+        #save the cropped image
+        adjusted_bbx = adjusted_bbx.astype(np.uint32)
+        croped_with_adjusted_bbx = cropped_original.crop((adjusted_bbx[0], adjusted_bbx[1], adjusted_bbx[2], adjusted_bbx[3]))
+        #save the cropped image
+        croped_with_adjusted_bbx.save("/datasets/sai/gencam/cogvideox/training/baist-cropped-adjusted.png")
+        cropped_original.save("/datasets/sai/gencam/cogvideox/training/baist-cropped.png")
+        blur_img = cropped_original.resize((self.image_size[1], self.image_size[0]), resample=Image.BILINEAR)
+
+ #cause pil is width, height
         blur_np = np.array([blur_img])
+
+
+
 
         base_dir = os.path.dirname(os.path.dirname(image_path))  # strip /blur
         filename = os.path.splitext(os.path.basename(image_path))[0]  # '00000000'
@@ -685,17 +860,55 @@ class BAISTDataset(BaseClass):
         _, seq_frames, inp_int, out_int, high_fps_video, num_frames = generate_test_case(
                         frame_paths=frame_paths, window_max=7, in_start=0, in_end=7, out_start=0,out_end=7, center=3, mode="1x", fps=240
                     )
-    
+        
+        
+        #crop seq frames using adjusted bbx
+        for i in range(len(seq_frames)):
+            x1, y1, x2, y2 = map(int, crop_box)
+            # print("Crop box: ", crop_box, "File name: ", image_path)
+            # print("Frame shape: ", seq_frames[i].shape)
+            # Crop using numpy slicing: [y1:y2, x1:x2, :]
+            cropped = seq_frames[i][y1:y2, x1:x2]
+
+            # Resize using OpenCV (cv2.resize expects width x height)
+            # print("Cropped shape: ", cropped.shape)
+            # print("Resizing to: ", (self.image_size[1], self.image_size[0]))
+            resized = cv2.resize(cropped, (self.image_size[1], self.image_size[0]), interpolation=cv2.INTER_LINEAR)
+
+            seq_frames[i] = resized
+            
         pixel_values = self.load_frames(np.stack(seq_frames, axis=0))
         blur_pixel_values = self.load_frames(blur_np)
 
         relative_file_name = os.path.relpath(image_path, self.data_dir)
+
+        out_bbx = adjusted_bbx.copy()
+
+        scale_x = blur_pixel_values.shape[3]/W
+        scale_y = blur_pixel_values.shape[2]/H
+        #scale the bbx
+        out_bbx[0] = int(out_bbx[0] * scale_x)
+        out_bbx[1] = int(out_bbx[1] * scale_y)
+        out_bbx[2] = int(out_bbx[2] * scale_x)
+        out_bbx[3] = int(out_bbx[3] * scale_y)
+
+        out_bbx = torch.tensor(out_bbx, dtype=torch.uint32)
+
+        #crop image using the bbx
+        blur_img_npy = np.array(blur_img)
+        out_bbx_npy = out_bbx.numpy().astype(np.uint32)
+        blur_img_npy = blur_img_npy[out_bbx_npy[1]:out_bbx_npy[3], out_bbx_npy[0]:out_bbx_npy[2], :]
+        #save the cropped image
+        Image.fromarray(blur_img_npy).save("/datasets/sai/gencam/cogvideox/training/baist-cropped-two.png")
+
+
 
     
         data = {
             'file_name': relative_file_name,
             'blur_img': blur_pixel_values,
             'video': pixel_values,
+            'bbx': out_bbx,
             'caption': "",
             'input_interval': inp_int,
             'output_interval': out_int,
@@ -703,3 +916,322 @@ class BAISTDataset(BaseClass):
             'mode':  "1x",
         }
         return data
+    
+
+
+class GoPro2xMotionBlurDataset(BaseClass):
+    def __init__(self,
+                 *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Set blur and sharp directories based on split
+        if self.split == 'train':
+            self.blur_root = os.path.join(self.data_dir, 'train', 'blur')
+            self.sharp_root = os.path.join(self.data_dir, 'train', 'sharp')
+        elif self.split in ['val', 'test']:
+            self.blur_root = os.path.join(self.data_dir, 'test', 'blur')
+            self.sharp_root = os.path.join(self.data_dir, 'test', 'sharp')
+        else:
+            raise ValueError(f"Unsupported split: {self.split}")
+
+        # Collect all blurred image paths
+        pattern = os.path.join(self.blur_root, '*', '*.png')
+
+        def get_sharp_paths(blur_paths):
+            sharp_paths = []
+            for blur_path in blur_paths:
+                base_dir = blur_path.replace('/blur/', '/sharp/')
+                frame_num = int(os.path.basename(blur_path).split('.')[0])
+                dir_path = os.path.dirname(base_dir)
+                sequence = [
+                    os.path.join(dir_path, f"{frame_num + offset:06d}.png")
+                    for offset in range(-6, 7)
+                ]
+                if all(os.path.exists(path) for path in sequence):
+                    sharp_paths.append(sequence)
+            return sharp_paths
+
+
+
+
+        self.blur_paths = sorted(glob.glob(pattern))
+        filtered_blur_paths = []
+        for path in self.blur_paths:
+            full_output_path = Path("/datasets/sai/gencam/cogvideox/training/cogvideox-gopro-2x/deblurred", *path.split('/')[-2:]).with_suffix(".mp4")
+            if not os.path.exists(full_output_path):
+                filtered_blur_paths.append(path)
+        self.blur_paths = filtered_blur_paths
+
+        self.sharp_paths = get_sharp_paths(self.blur_paths)
+        if self.split == 'val':
+            # Optional: limit validation subset
+            self.sharp_paths = self.sharp_paths[:5]
+        self.length = len(self.sharp_paths)
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        # Path to the blurred (center) frame
+        sharp_path = self.sharp_paths[idx]
+
+
+        # Load sharp frames
+        blur_img, seq_frames, inp_int, out_int, high_fps_video, num_frames = generate_test_case(
+                        frame_paths=sharp_path, window_max=13, in_start=3, in_end=10, out_start=0,out_end=13, center=6, mode="2x", fps=240
+                    )
+        
+        # Convert to pixel values via BaseClass loader
+        video = self.load_frames(np.array(seq_frames))                    # shape: (output_length, H, W, C)
+        blur_input = self.load_frames(np.expand_dims(np.array(blur_img), 0))  # shape: (1, H, W, C)
+        last_two_parts_of_path = os.path.join(*sharp_path[6].split(os.sep)[-2:])
+        #print(f"Time taken to load and process data: {end_time - start_time:.2f} seconds")
+        data = {
+            'file_name': last_two_parts_of_path,
+            'blur_img': blur_input,
+            'video': video,
+            "caption": "",
+            'input_interval': inp_int,
+            'output_interval': out_int,
+            "num_frames": num_frames,
+            "mode": "2x",
+        }
+        return data
+    
+
+class GoProLargeMotionBlurDataset(BaseClass):
+    def __init__(self,
+                 *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Set blur and sharp directories based on split
+        if self.split == 'train':
+            self.blur_root = os.path.join(self.data_dir, 'train', 'blur')
+            self.sharp_root = os.path.join(self.data_dir, 'train', 'sharp')
+        elif self.split in ['val', 'test']:
+            self.blur_root = os.path.join(self.data_dir, 'test', 'blur')
+            self.sharp_root = os.path.join(self.data_dir, 'test', 'sharp')
+        else:
+            raise ValueError(f"Unsupported split: {self.split}")
+
+        # Collect all blurred image paths
+        pattern = os.path.join(self.blur_root, '*', '*.png')
+
+        def get_sharp_paths(blur_paths):
+            sharp_paths = []
+            for blur_path in blur_paths:
+                base_dir = blur_path.replace('/blur/', '/sharp/')
+                frame_num = int(os.path.basename(blur_path).split('.')[0])
+                dir_path = os.path.dirname(base_dir)
+                sequence = [
+                    os.path.join(dir_path, f"{frame_num + offset:06d}.png")
+                    for offset in range(-16, 16)
+                ]
+                if all(os.path.exists(path) for path in sequence):
+                    sharp_paths.append(sequence)
+            return sharp_paths
+
+        self.blur_paths = sorted(glob.glob(pattern))
+        self.sharp_paths = get_sharp_paths(self.blur_paths)
+        if self.split == 'val':
+            # Optional: limit validation subset
+            self.sharp_paths = self.sharp_paths[:5]
+        self.length = len(self.sharp_paths)
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        # Path to the blurred (center) frame
+        sharp_path = self.sharp_paths[idx]
+
+
+        # Load sharp frames
+        blur_img, seq_frames, inp_int, out_int, high_fps_video, num_frames = generate_test_case(
+                        frame_paths=sharp_path, window_max=32, in_start=0, in_end=32, out_start=0,out_end=32, center=16, mode="lb", fps=120
+                    )
+        
+        # Convert to pixel values via BaseClass loader
+        video = self.load_frames(np.array(seq_frames))                    # shape: (output_length, H, W, C)
+        blur_input = self.load_frames(np.expand_dims(np.array(blur_img), 0))  # shape: (1, H, W, C)
+        last_two_parts_of_path = os.path.join(*sharp_path[6].split(os.sep)[-2:])
+        #print(f"Time taken to load and process data: {end_time - start_time:.2f} seconds")
+        data = {
+            'file_name': last_two_parts_of_path,
+            'blur_img': blur_input,
+            'video': video,
+            "caption": "",
+            'input_interval': inp_int,
+            'output_interval': out_int,
+            "num_frames": num_frames,
+            "mode": "lb",
+        }
+        if self.split == 'test':
+            high_fps_video = self.load_frames(np.stack(high_fps_video, axis=0))
+            data['high_fps_video'] = high_fps_video
+        return data
+    
+class SimpleBAISTDataset(BaseClass):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+      
+        test_folders =  {
+            "gWA_sBM_c01_d26_mWA0_ch06_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch01_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch04_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch05_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch08_cropped_32X": None,
+            "gWA_sBM_c01_d26_mWA0_ch02_cropped_32X": None,
+            "gJS_sBM_c01_d02_mJS0_ch08_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch07_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch06_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch03_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch05_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch02_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch03_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch09_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch10_cropped_32X": None,
+            "gWA_sBM_c01_d26_mWA0_ch10_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch06_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch08_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch06_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch10_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch09_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch02_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch04_cropped_32X": None,
+            "gPO_sBM_c01_d10_mPO0_ch09_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch01_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch07_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch03_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch04_cropped_32X": None,
+            "gBR_sBM_c01_d05_mBR0_ch02_cropped_32X": None,
+            "gHO_sBM_c01_d20_mHO0_ch01_cropped_32X": None,
+            "gMH_sBM_c01_d22_mMH0_ch05_cropped_32X": None,
+            "gPO_sBM_c01_d10_mPO0_ch10_cropped_32X": None,
+        }
+
+        def collect_blur_images(root_dir, allowed_folders, skip_start=40, skip_end=40):
+            blur_image_paths = []
+
+            for dirpath, dirnames, filenames in os.walk(root_dir):
+                if os.path.basename(dirpath) == "blur":
+                    parent_folder = os.path.basename(os.path.dirname(dirpath))
+                    if (self.split in ["test", "val"] and parent_folder in test_folders) or (self.split in "train" and parent_folder not in test_folders):
+                        # Filter and sort valid image filenames
+                        valid_files = [
+                            f for f in filenames
+                            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff')) and os.path.splitext(f)[0].isdigit()
+                        ]
+                        valid_files.sort(key=lambda x: int(os.path.splitext(x)[0]))
+
+                        # Skip first and last N files
+                        middle_files = valid_files[skip_start:len(valid_files) - skip_end]
+
+                        for f in middle_files:
+                            from pathlib import Path
+                            full_path = Path(os.path.join(dirpath, f))
+                            full_output_path = Path("/datasets/sai/gencam/cogvideox/training/cogvideox-simplebaist-finetune-sample/deblurred", *full_path.parts[-3:]).with_suffix(".mp4")
+                            if not os.path.exists(full_output_path) or self.split in ["train", "val"]:
+                                blur_image_paths.append(os.path.join(dirpath, f))
+
+            return blur_image_paths
+
+    
+
+        self.image_paths = collect_blur_images(self.data_dir, test_folders)
+        print("Blur image paths: ", len(self.image_paths))
+        #if bbx path does not exist, remove the image path
+        self.image_paths = [path for path in self.image_paths if os.path.exists(path.replace("blur", "blur_anno").replace(".png", ".pkl"))]
+
+        filtered_image_paths = []
+        for blur_path in self.image_paths:
+            base_dir = blur_path.replace('/blur/', '/sharp/').replace('.png', '')
+            sharp_paths = [f"{base_dir}_{i:03d}.png" for i in range(7)]
+            if all(os.path.exists(p) for p in sharp_paths):
+                filtered_image_paths.append(blur_path)
+
+        self.image_paths = filtered_image_paths
+                
+        if self.split == 'val':
+            # Optional: limit validation subset
+            self.image_paths = self.image_paths[:4]
+        self.length = len(self.image_paths)
+
+    def __len__(self):
+        return self.length
+    
+    
+    def __getitem__(self, idx):
+        image_path = self.image_paths[idx]
+        blur_img_original = load_as_srgb(image_path)
+
+        bbx_path = image_path.replace("blur", "blur_anno").replace(".png", ".pkl")
+        
+        #load the bbx path
+        bbx = np.load(bbx_path, allow_pickle=True)['bbox'][0:4]
+        # Final crop box
+        #turn crop_box into tupel
+        W,H = blur_img_original.size
+        blur_img = blur_img_original.resize((self.image_size[1], self.image_size[0]), resample=Image.BILINEAR)
+
+ #cause pil is width, height
+        blur_np = np.array([blur_img])
+
+
+
+
+        base_dir = os.path.dirname(os.path.dirname(image_path))  # strip /blur
+        filename = os.path.splitext(os.path.basename(image_path))[0]  # '00000000'
+        sharp_dir = os.path.join(base_dir, "sharp")
+
+        frame_paths = [
+            os.path.join(sharp_dir, f"{filename}_{i:03d}.png")
+            for i in range(7)
+        ]
+
+
+        _, seq_frames, inp_int, out_int, high_fps_video, num_frames = generate_test_case(
+                        frame_paths=frame_paths, window_max=7, in_start=0, in_end=7, out_start=0,out_end=7, center=3, mode="1x", fps=240
+                    )
+        
+
+            
+        pixel_values = self.load_frames(np.stack(seq_frames, axis=0))
+        blur_pixel_values = self.load_frames(blur_np)
+
+        relative_file_name = os.path.relpath(image_path, self.data_dir)
+
+        out_bbx = bbx.copy()
+
+        scale_x = blur_pixel_values.shape[3]/W
+        scale_y = blur_pixel_values.shape[2]/H
+        #scale the bbx
+        out_bbx[0] = int(out_bbx[0] * scale_x)
+        out_bbx[1] = int(out_bbx[1] * scale_y)
+        out_bbx[2] = int(out_bbx[2] * scale_x)
+        out_bbx[3] = int(out_bbx[3] * scale_y)
+
+        out_bbx = torch.tensor(out_bbx, dtype=torch.uint32)
+
+        #crop image using the bbx
+        blur_img_npy = np.array(blur_img)
+        out_bbx_npy = out_bbx.numpy().astype(np.uint32)
+        blur_img_npy = blur_img_npy[out_bbx_npy[1]:out_bbx_npy[3], out_bbx_npy[0]:out_bbx_npy[2], :]
+        #save the cropped image
+        Image.fromarray(blur_img_npy).save("/datasets/sai/gencam/cogvideox/training/baist-cropped-two.png")
+
+
+
+    
+        data = {
+            'file_name': relative_file_name,
+            'blur_img': blur_pixel_values,
+            'video': pixel_values,
+            'bbx': out_bbx,
+            'caption': "",
+            'input_interval': inp_int,
+            'output_interval': out_int,
+            "num_frames": num_frames,
+            'mode':  "1x",
+        }
+        return data
+    
