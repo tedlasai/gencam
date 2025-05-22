@@ -18,14 +18,14 @@ import cv2
 
 @contextmanager
 def timer(name):
-    t1 = time.time()
-    yield 
-    print(name, ":   ", time.time() - t1)
+	t1 = time.time()
+	yield 
+	print(name, ":   ", time.time() - t1)
 
 def write_txt(file_name, line):
-    with open(file_name,'a') as log:
-        log.write(line+'\n')
-    print(line)
+	with open(file_name,'a') as log:
+		log.write(line+'\n')
+	print(line)
 
 
 
@@ -75,80 +75,39 @@ avgEPE_new = 0.0
 calculate_EPE = False
 counter = 0
 
-# def cv_videosave(output_path, video_array, fps=20,
-#                  downsample_spatial=1,   # e.g. 2 to halve width & height
-#                  downsample_temporal=1): # e.g. 2 to keep every 2nd frame
-#     """
-#     Save a video from a (T, H, W, C) numpy array using OpenCV VideoWriter,
-#     with optional spatial and/or temporal downsampling by an integer factor.
-#     """
-#     assert video_array.ndim == 4 and video_array.shape[-1] == 3, \
-#         "Expected (T, H, W, C=3) array"
-#     assert video_array.dtype == np.uint8, "Expected uint8 array"
-#     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-#     T, H, W, _ = video_array.shape
-
-#     # adjust FPS if you’re dropping frames but want the same perceived speed
-#     out_fps = fps
-#     if downsample_temporal > 1:
-#         # if you want to keep video length same, uncomment:
-#         # out_fps = fps / downsample_temporal
-#         video_array = video_array[::downsample_temporal]
-    
-#     # prepare writer
-#     fourcc = cv2.VideoWriter_fourcc(*'avc1')
-    
-#     # spatially downsample once
-#     new_size = (W // downsample_spatial, H // downsample_spatial)
-#     writer = cv2.VideoWriter(output_path, fourcc, out_fps, new_size)
-
-#     if not writer.isOpened():
-#         raise RuntimeError(f"Failed to open writer for {output_path}")
-
-#     # BGR conversion + per-frame resize
-#     for frame in video_array:
-#         # frame: H×W×3, RGB uint8
-#         bgr = frame[..., ::-1]
-#         if downsample_spatial > 1:
-#             bgr = cv2.resize(bgr, new_size, interpolation=cv2.INTER_NEAREST)
-#         writer.write(bgr)
-
-#     writer.release()
-
 def save_frames_as_pngs(output_dir, video_array,
-                        downsample_spatial=1,   # e.g. 2 to halve width & height
-                        downsample_temporal=1): # e.g. 2 to keep every 2nd frame
-    """
-    Save each frame of a (T, H, W, C) numpy array as a PNG with no compression.
-    """
-    assert video_array.ndim == 4 and video_array.shape[-1] == 3, \
-        "Expected (T, H, W, C=3) array"
-    assert video_array.dtype == np.uint8, "Expected uint8 array"
-    
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # temporal downsample
-    frames = video_array[::downsample_temporal]
-    
-    # compute spatially downsampled size
-    T, H, W, _ = frames.shape
-    new_size = (W // downsample_spatial, H // downsample_spatial)
-    
-    # PNG compression param: 0 = no compression
-    png_params = [cv2.IMWRITE_PNG_COMPRESSION, 0]
-    
-    for idx, frame in enumerate(frames):
-        # frame is RGB; convert to BGR for OpenCV
-        bgr = frame[..., ::-1]
-        if downsample_spatial > 1:
-            bgr = cv2.resize(bgr, new_size, interpolation=cv2.INTER_NEAREST)
-        
-        filename = os.path.join(output_dir, f"frame_{idx:05d}.png")
-        success = cv2.imwrite(filename, bgr, png_params)
-        if not success:
-            raise RuntimeError(f"Failed to write frame {idx} to {filename}")
-        
+						downsample_spatial=1,   # e.g. 2 to halve width & height
+						downsample_temporal=1): # e.g. 2 to keep every 2nd frame
+	"""
+	Save each frame of a (T, H, W, C) numpy array as a PNG with no compression.
+	"""
+	assert video_array.ndim == 4 and video_array.shape[-1] == 3, \
+		"Expected (T, H, W, C=3) array"
+	assert video_array.dtype == np.uint8, "Expected uint8 array"
+	
+	os.makedirs(output_dir, exist_ok=True)
+	
+	# temporal downsample
+	frames = video_array[::downsample_temporal]
+	
+	# compute spatially downsampled size
+	T, H, W, _ = frames.shape
+	new_size = (W // downsample_spatial, H // downsample_spatial)
+	
+	# PNG compression param: 0 = no compression
+	png_params = [cv2.IMWRITE_PNG_COMPRESSION, 0]
+	
+	for idx, frame in enumerate(frames):
+		# frame is RGB; convert to BGR for OpenCV
+		bgr = frame[..., ::-1]
+		if downsample_spatial > 1:
+			bgr = cv2.resize(bgr, new_size, interpolation=cv2.INTER_NEAREST)
+		
+		filename = os.path.join(output_dir, f"frame_{idx:05d}.png")
+		success = cv2.imwrite(filename, bgr, png_params)
+		if not success:
+			raise RuntimeError(f"Failed to write frame {idx} to {filename}")
+		
 
 for i, data in enumerate(dataset):
 	if i >= opt.how_many:
@@ -158,12 +117,14 @@ for i, data in enumerate(dataset):
 	paths = model.set_input(data)
 	with timer('test time'):
 		model.test()
-		frames = model.vis_everyframe()
+		frames = model.vis_everyframe(target_n_offset=16)
 		frames = np.array(frames)
-		base_name = os.path.basename(paths[0])
-		base_mp4 = os.path.splitext(base_name)[0] 
-		prefix, filename = base_mp4.rsplit('_', 1)
-		save_frames_as_pngs(os.path.join(opt.results_dir, opt.name, 'videos', prefix, filename), frames, downsample_spatial=2)
+		base_name = os.path.basename(paths[0])   
+		#remove png extension
+		base_folder_name = os.path.splitext(base_name)[0] + "+_1x"
+		print("Frames shape: ", frames.shape)
+
+		save_frames_as_pngs(os.path.join(opt.results_dir, opt.name, 'videos', "outsidephotos", base_folder_name), frames, downsample_spatial=1)
 	visuals = model.get_current_visuals()
 	if calculate_EPE:
 		offset = model.get_current_offset()

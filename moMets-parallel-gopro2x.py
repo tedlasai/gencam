@@ -4,7 +4,6 @@ import numpy as np
 np.float = np.float64
 np.int = np.int_
 import os
-import skvideo.io 
 from cdfvd import fvd
 from skimage.metrics import structural_similarity
 import torch
@@ -16,8 +15,8 @@ import torch.nn.functional as F
 from epe_metric import compute_bidirectional_epe as epe
 import pdb
 import multiprocessing
-skvideo.setFFmpegPath('/usr/local/bin')
-
+import cv2
+import glob
 # init
 # dataDir = 'BaistCroppedOutput' # 'dataGoPro' # 
 # gtDir = 'gt_subset' #'GT' # 
@@ -34,12 +33,12 @@ skvideo.setFFmpegPath('/usr/local/bin')
 # eps = 1e-8 
 
 dataDir = '/home/tedlasai/genCamera/GOPRO2XResults' # 'BaistCroppedOutput' #
-gtDir = 'gt' #'GT' #
-methodDirs = ['deblurred']  # ['deblurred-full', 'animation-from-blur', ] #
-fType = '.mp4'
+gtDir = 'GT' #'GT' #
+methodDirs = ['Ours']  # ['deblurred-full', 'animation-from-blur', ] #
+#fType = '.mp4'
 depth = 8
 resFile = 'resultsGoPro2x20250521.npy'# './resultsBaist20250521.npy'#
-patchDim = 64 #32 #
+patchDim = 40 #32 #
 pixMax = 1.0
 nMets = 7 # new results: scoreFVD, scorePWPSNR, scoreEPE, scorePatchSSIM, scorePatchLPIPS, scorePSNR
 compute = True # if False, load previously computed
@@ -50,6 +49,13 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # Use 'spawn' to avoid CUDA context issues
 multiprocessing.freeze_support()              # on Windows
 multiprocessing.set_start_method('spawn', force=True)
+
+def read_pngs_to_array(path):
+    """Read all PNGs in `path`, sort them by filename, convert BGR→RGB, and stack into an np.ndarray."""
+    return np.stack([
+        cv2.imread(f, cv2.IMREAD_UNCHANGED)[..., ::-1]
+        for f in sorted(glob.glob(f"{path}/*.png"))
+    ])
 
 def compute_method(results_local, methodDir, files, countMethod):
 
@@ -63,9 +69,12 @@ def compute_method(results_local, methodDir, files, countMethod):
 
         # pull frames from MP4
         pathMethod = os.path.join(dataDir, methodDir, file)
-        framesMethod = np.clip(skvideo.io.vread(pathMethod).astype(np.float32) / (2**depth-1),0,1)
+        framesMethod = np.clip(read_pngs_to_array(pathMethod).astype(np.float32) / (2**depth-1),0,1)
         pathGT = os.path.join(dataDir, gtDir, file)
-        framesGT = np.clip(skvideo.io.vread(pathGT).astype(np.float32) / (2**depth-1),0,1)
+        framesGT = np.clip(read_pngs_to_array(pathGT).astype(np.float32) / (2**depth-1),0,1)
+
+        #make sure the GT and method have the same shape
+        assert framesGT.shape == framesMethod.shape, f"GT shape {framesGT.shape} does not match method shape {framesMethod.shape} for file {file}"
 
         # video metrics
 
@@ -107,8 +116,13 @@ def compute_method(results_local, methodDir, files, countMethod):
                 frameMethod = framesMethod[i,:,:,:] # method frames can be re-ordered
                 frameGT =  framesGT[countFrames,:,:,:]
 
+                #assert patch size is divisible by image size
+                rows, cols, ch = frameGT.shape
+                assert rows % patchDim == 0, f"rows {rows} is not divisible by patchDim {patchDim}"
+                assert cols % patchDim == 0, f"cols {cols} is not divisible by patchDim {patchDim}"
                 rPatch = np.ceil(rows/patchDim)
                 cPatch = np.ceil(cols/patchDim)
+                
 
                 # LPIPS
                 #pdb.set_trace()
@@ -174,8 +188,8 @@ def compute_method(results_local, methodDir, files, countMethod):
                         #patchMSE = np.mean(mapMSE[startR:endR,startC:endC,:])
                         #scorePatchPSNR = np.clip((10 * np.log10(pixMax**2 / patchMSE)),0,100)
                         if dataDir == 'BaistCroppedOutput':
-                            patchGtTensor = F.interpolate(gtTensor[:,:,startR:endR,startC:endC], scale_factor=2.0, mode='bicubic', align_corners=False)
-                            patchMethodTensor = F.interpolate(methodTensor[:,:,startR:endR,startC:endC], scale_factor=2.0, mode='bicubic', align_corners=False)
+                            patchGtTensor = F.interpolate(gtTensor[:,:,startR:endR,startC:endC], scale_factor=2.0, mode='bilinear', align_corners=False)
+                            patchMethodTensor = F.interpolate(methodTensor[:,:,startR:endR,startC:endC], scale_factor=2.0, mode='bilinear', align_corners=False)
                             scorePatchLPIPS = fnLPIPS(patchGtTensor, patchMethodTensor).squeeze(0,1,2).cpu().detach().numpy()[0]                                
                         else:
                             scorePatchLPIPS = fnLPIPS(gtTensor[:,:,startR:endR,startC:endC], methodTensor[:,:,startR:endR,startC:endC]).squeeze(0,1,2).cpu().detach().numpy()[0]                                
@@ -217,10 +231,10 @@ else:
     extraFknDir = ''
 for clipDir in clipDirs:
     path = os.path.join(dataDir, gtDir, clipDir, extraFknDir)
-    files = files + [os.path.join(clipDir,extraFknDir,name) for name in os.listdir(path) if name.endswith(fType)]
+    files = files + [os.path.join(clipDir,extraFknDir,name) for name in os.listdir(path)]
 files = sorted(files)
 path = os.path.join(dataDir, methodDirs[0], files[0])
-testFileGT = skvideo.io.vread(path)
+testFileGT = read_pngs_to_array(path)
 frams,rows,cols,ch = testFileGT.shape
 framRange = [i for i in range(frams)]
 directions = [framRange, framRange[::-1]]

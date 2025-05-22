@@ -15,10 +15,45 @@ from os.path import join
 from logger import Logger
 from model.bicyclegan.global_model import GuidePredictor as GP
 from tqdm import tqdm
-from gopro_valid_vaegan import write_video
+import os
+import cv2
 loss_fn_alex = lpips.LPIPS(net='alex').to('cuda:0')
 
 
+def save_frames_as_pngs(output_dir, video_array,
+                        downsample_spatial=1,   # e.g. 2 to halve width & height
+                        downsample_temporal=1): # e.g. 2 to keep every 2nd frame
+    """
+    Save each frame of a (T, H, W, C) numpy array as a PNG with no compression.
+    """
+    print("video_array shape", video_array.shape)
+    assert video_array.ndim == 4 and video_array.shape[-1] == 3, \
+        "Expected (T, H, W, C=3) array"
+    assert video_array.dtype == np.uint8, "Expected uint8 array"
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # temporal downsample
+    frames = video_array[::downsample_temporal]
+    
+    # compute spatially downsampled size
+    T, H, W, _ = frames.shape
+    new_size = (W // downsample_spatial, H // downsample_spatial)
+    
+    # PNG compression param: 0 = no compression
+    png_params = [cv2.IMWRITE_PNG_COMPRESSION, 0]
+    
+    for idx, frame in enumerate(frames):
+        # frame is RGB; convert to BGR for OpenCV
+        bgr = frame[..., ::-1]
+        if downsample_spatial > 1:
+            bgr = cv2.resize(bgr, new_size, interpolation=cv2.INTER_NEAREST)
+        
+        filename = os.path.join(output_dir, "frame_{:05d}.png".format(idx))
+        success = cv2.imwrite(filename, bgr, png_params)
+        if not success:
+            raise RuntimeError("Failed to write frame ")
+        
 def init_seeds(seed=0):
     random.seed(seed)
     np.random.seed(seed)
@@ -92,12 +127,12 @@ def evaluate(d_model, p_model, valid_loader, local_rank):
             print("image_path", tensor['img_path'][0][0])
             relative_path = os.path.relpath( tensor['img_path'][0][0], "./dataset/b-aist++")
             #change relative path extnesion to mp4
-            relative_path = relative_path.replace(".png", ".mp4")
+            relative_path = relative_path.replace(".png", "")
             write_path = os.path.join('/home/tedlasai/genCamera/Animation-from-Blur-main/baist_videos_out', relative_path)
             # create directory if it does not exist
             os.makedirs(os.path.dirname(write_path), exist_ok=True)
             print("write_path", write_path)
-            write_video(torch.clamp(pred_imgs.squeeze(0),0,255), filename=write_path, fps=10)
+            save_frames_as_pngs(write_path, torch.clamp(pred_imgs.squeeze(0),0,255).permute(0,2,3,1).cpu().numpy().astype(np.uint8))
 
 
             # Record loss and metrics

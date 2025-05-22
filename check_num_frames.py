@@ -1,33 +1,24 @@
-#!/usr/bin/env python3
 import os
+import glob
+import cv2
+import numpy as np
 
-# root of your FullDataset
-DATASET_DIR = '/home/tedlasai/genCamera/FullDataset'
+video_dir = '/home/tedlasai/genCamera/GOPROLargeResults/gt'
+mp4_paths = sorted(glob.glob(os.path.join(video_dir, '**', '*.mp4'), recursive=True))
+for path in mp4_paths:
+    frames = []
+    cap = cv2.VideoCapture(path)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(frame)
+    cap.release()
 
-# which extensions count as frames
-FRAME_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
+    if not frames:
+        print(f"{os.path.basename(path)}: no frames read")
+        continue
 
-def count_frames(folder):
-    return sum(1 for f in os.listdir(folder)
-               if os.path.splitext(f)[1].lower() in FRAME_EXTS)
-
-if __name__ == '__main__':
-    # loop each category (GOPRO, sports, etc.)
-    for category in sorted(os.listdir(DATASET_DIR)):
-        cat_path = os.path.join(DATASET_DIR, category)
-        if not os.path.isdir(cat_path):
-            continue
-
-        lower_dir = os.path.join(cat_path, 'lower_fps_frames')
-        if not os.path.isdir(lower_dir):
-            continue
-
-        # scan each sequence under lower_fps_frames
-        for seq in sorted(os.listdir(lower_dir)):
-            seq_path = os.path.join(lower_dir, seq)
-            if not os.path.isdir(seq_path):
-                continue
-
-            n = count_frames(seq_path)
-            tag = "⚠️" if n < 25 else "✔️"
-            print(f"[{tag}] {category}/{seq}: {n} frames")
+    video_array = np.stack(frames, axis=0)
+    num_frames, height, width, channels = video_array.shape
+    print(f"{os.path.basename(path)} → shape: ({num_frames}, {height}, {width}, {channels})")

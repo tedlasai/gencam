@@ -3,8 +3,8 @@ import os
 from glob import glob
 
 # Source and destination directories
-src_dir = "/home/tedlasai/genCamera/GoProResults/BlurryFullSize"
-dst_dir = "/home/tedlasai/genCamera/GoProResults/blurry"
+src_dir = "/home/tedlasai/genCamera/GOPRO2XResults/OursFullSize"
+dst_dir = "/home/tedlasai/genCamera/GOPRO2XResults/Ours"
 
 # Helper function to create destination directory and compute dst_path
 def get_dst_path(src_path):

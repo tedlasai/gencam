@@ -32,3 +32,17 @@ FullDatasetResults
 HyperCUT-mainOldstuff
 Oldstuff
 RBI
+*.npy
+Favaro/__pycache__git
+BlurryOutsidePhotos/
+GOPROResultsImages
+HyperCUT-main
+RBI.zip
+GOPROResultsImages
+Favaro/outsideimageresults/
+content-debiased-fvd/
+Favaro/__pycache__
+BAISTResultsImages/
+__pycache__/
+FullSizeExtra/
+Motion-ETR-main/models/pytorch-msssim

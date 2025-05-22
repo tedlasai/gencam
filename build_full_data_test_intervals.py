@@ -11,19 +11,19 @@ FRAME_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
 # every interval spec you requested
 INTERVAL_SPECS = [
     # 1x mode, various window sizes
-    {"ds": 2,  "de": 2,  "fps": 240, "mode": "1x"},  # size 4
-    {"ds": 3,  "de": 4,  "fps": 240, "mode": "1x"},  # size 7
-    {"ds": 4,  "de": 4,  "fps": 240, "mode": "1x"},  # size 8
-    {"ds": 6,  "de": 6,  "fps": 240, "mode": "1x"},  # size 12
+    # {"ds": 2,  "de": 2,  "fps": 240, "mode": "1x"},  # size 4
+    # {"ds": 3,  "de": 4,  "fps": 240, "mode": "1x"},  # size 7
+    # {"ds": 4,  "de": 4,  "fps": 240, "mode": "1x"},  # size 8
+    # {"ds": 6,  "de": 6,  "fps": 240, "mode": "1x"},  # size 12
     {"ds": 8,  "de": 8,  "fps": 240, "mode": "1x"},  # size 16
 
     # 2x mode
-    {"ds": 4,  "de": 4,  "fps": 240, "mode": "2x"},  # size 8
+    #{"ds": 4,  "de": 4,  "fps": 240, "mode": "2x"},  # size 8
     {"ds": 8,  "de": 8,  "fps": 120, "mode": "2x"},  # size 16
 
     # large blur
-    {"ds": 16, "de": 16, "fps": 120, "mode": "lb"},  # size 24
-    {"ds": 24, "de": 24, "fps": 80, "mode": "lb"},  # size 48
+    #{"ds": 16, "de": 16, "fps": 120, "mode": "lb"},  # size 24
+    #{"ds": 24, "de": 24, "fps": 80, "mode": "lb"},  # size 48
 ]
 
 def count_frames(folder):

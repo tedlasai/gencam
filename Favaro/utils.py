@@ -4,7 +4,9 @@ from torch.autograd import Variable
 import numpy as np
 
 def load_image(filename, size=None, scale=None):
+    print("Loading image:", filename)
     img = Image.open(filename)
+    print("Image size:", img.size)
     if size is not None:
         img = img.resize((size, size), Image.ANTIALIAS)
     elif scale is not None:

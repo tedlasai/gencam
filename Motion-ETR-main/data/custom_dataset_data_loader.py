@@ -5,7 +5,10 @@ from data.base_data_loader import BaseDataLoader
 def CreateDataset(opt):
     dataset = None
     # import ipdb;ipdb.set_trace()
-    if opt.dataset_mode == 'aligned':
+    if opt.dataset_mode == 'outsidephotos':
+        from data.outsidephotos_dataset import OutsidePhotosDataset
+        dataset = OutsidePhotosDataset(opt)
+    elif opt.dataset_mode == 'aligned':
         from data.aligned_dataset import AlignedDataset
         dataset = AlignedDataset(opt)
     elif opt.dataset_mode == 'single':

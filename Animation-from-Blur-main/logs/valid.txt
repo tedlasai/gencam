@@ -8,3 +8,5 @@
 [valid max.] 2025/05/16, 01:46:37 - eval time: 1356.5718 sec, psnr: 22.0811, ssim: 0.8967, lpips: 0.0680
 [valid] 2025/05/16, 03:25:34 - eval time: 1167.4658508300781 sec, psnr: 19.90848, ssim: 0.85947, lpips: 0.0874
 [valid max.] 2025/05/16, 03:25:34 - eval time: 1167.4659 sec, psnr: 22.0811, ssim: 0.8967, lpips: 0.0680
+[valid] 2025/05/21, 03:27:58 - eval time: 490.77455139160156 sec, psnr: 19.90848, ssim: 0.85947, lpips: 0.0874
+[valid max.] 2025/05/21, 03:27:58 - eval time: 490.7746 sec, psnr: 22.0811, ssim: 0.8967, lpips: 0.0680

@@ -87,6 +87,7 @@ class MA_Deblur(BaseModel):
 		self.real_A = Variable(self.input_A)
 		self.real_B = Variable(self.input_B)
 		B,C,H,W = self.real_A.shape
+		
 
 		self.offsets, self.fake_B = self.MANet(self.real_A)   # offset[B,2*n_offset,H,W]
 		# offset_n = torch.chunk(self.offsets, self.n_offset,dim=1)
@@ -157,7 +158,7 @@ class MA_Deblur(BaseModel):
 
 	def get_current_visuals(self):
 		real_A = util.tensor2im(self.real_A.data)
-		if self.opt.dataset_mode == 'aligned':
+		if self.opt.dataset_mode in ['aligned', 'outsidephotos']:
 			fake_B = util.tensor2im(self.fake_B.data)
 			real_B = util.tensor2im(self.real_B.data)
 			return OrderedDict([('Blurry', real_A), ('Restore', fake_B), ('Sharp', real_B)])
@@ -182,23 +183,51 @@ class MA_Deblur(BaseModel):
 
 
 
-	def vis_everyframe(self):
+	def vis_everyframe(self, target_n_offset=7):
 		## Once you have deblured image and estimated motion offsets.
 		## This function can be used for extracting video frame from the blurry image. 
 		B,C,H,W = self.fake_B.shape
-		offset_N = torch.chunk(self.offsets, self.n_offset, dim=1)
-		fake_A_n = torch.zeros(B,C*self.n_offset,H,W).cuda()
+		offsets = self.offsets.view(B, self.n_offset, 2, H, W)  # [1, 15, 2, H, W]
+
+		#swap the order here
+		order = np.arange(self.n_offset)
+		mid = self.n_offset//2
+		offsets[:, 1:mid, :, :, :] = torch.flip(offsets[:, 1:mid, :, :, :], dims=[1])#6,5,4,3,2,1 -> 1,2,3,4,5,6 - have to dow swapping here
+
+		# Interpolate to 7 offsets
+		import torch.nn.functional as F
+
+		# Step 2: Flatten spatial dims so we can interpolate along temporal dim
+		offsets = offsets.permute(0, 3, 4, 2, 1)  # [1, H, W, 2, 15]
+		offsets = offsets.reshape(-1, 2, self.n_offset)  # [H*W, 2, 15]
+
+		# Step 3: Interpolate to 7 offset steps
+		print("offsets shape: ", offsets.shape)
+		offsets_interp = F.interpolate(offsets, size=target_n_offset, mode='linear', align_corners=True)  # [H*W, 2, 7]
+		print("offsets_interp shape: ", offsets_interp.shape)
+
+		# Step 4: Reshape back to [B, 2*7, H, W]
+		offsets_interp = offsets_interp.reshape(B, H, W, 2, target_n_offset).permute(0, 4, 3, 1, 2)  # [1, 7, 2, H, W]
+		offsets_interp = offsets_interp.reshape(B, target_n_offset * 2, H, W)  # [1, 14, H, W]
+
+		print("offsets_interp shape: ", offsets_interp.shape)
+
+		offset_N = torch.chunk(offsets_interp, target_n_offset, dim=1)
+
+		fake_A_n = torch.zeros(B,C*target_n_offset,H,W).cuda()
 		with torch.no_grad():
 			for i in range(len(offset_N)):
 				fake_A_n[:,i*3:(i+1)*3,:,:] = self.blur_net(self.fake_B,offset_N[i])
-
-		frames = torch.chunk(fake_A_n,self.n_offset,dim=1)
+		print("Target_n_offset: ", target_n_offset)
+		print("fake_A_n shape: ", fake_A_n.shape)
+		frames = torch.chunk(fake_A_n,target_n_offset,dim=1)
+		print("frames shape: ", frames[0].shape)
 		frames_order = []
-		order = np.arange(self.n_offset)
-		mid = self.n_offset//2
-		order[1:mid] = np.arange(mid-1,0,-1)
+		# order = np.arange(target_n_offset)
+		# mid = target_n_offset//2
+		# order[1:mid] = np.arange(mid-1,0,-1) #6,5,4,3,2,1 -> 1,2,3,4,5,6
 		for i in range(len(frames)):
-			frame_i = frames[order[i]]
+			frame_i = frames[i]
 			frame_np = util.tensor2im(frame_i)
 			frames_order.append(frame_np)
 		return frames_order

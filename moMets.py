@@ -4,7 +4,6 @@ np.float = np.float64
 np.int = np.int_
 import os
 from video2numpy import video2numpy
-import skvideo.io 
 from cdfvd import fvd
 from skimage.metrics import structural_similarity
 import torch
@@ -15,13 +14,13 @@ import lpips
 import torch.nn.functional as F
 from epe_metric import compute_bidirectional_epe as epe
 import pdb
-skvideo.setFFmpegPath('/usr/local/bin')
-
+import cv2
+import glob
 # init
 dataDir = 'BaistCroppedOutput' # 'dataGoPro' # 
 gtDir = 'gt' #'GT' # 
 methodDirs = ['deblurred-full', 'animation-from-blur', ] #['Favaro','MotionETR','Ours','GOPROGeneralize']  # 
-fType = '.mp4'
+#fType = '.mp4'
 depth = 8
 resFile = './resultsBaist20250521.npy'#resultsGoPro20250520.npy'# 
 
@@ -33,6 +32,13 @@ compute = True # if False, load previously computed
 eps = 1e-8 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def read_pngs_to_array(path):
+    """Read all PNGs in `path`, sort them by filename, convert BGR→RGB, and stack into an np.ndarray."""
+    return np.stack([
+        cv2.imread(f, cv2.IMREAD_UNCHANGED)[..., ::-1]
+        for f in sorted(glob.glob(f"{path}/*.png"))
+    ])
 
 if compute:
     
@@ -46,10 +52,10 @@ if compute:
         extraFknDir = ''
     for clipDir in clipDirs:
         path = os.path.join(dataDir, gtDir, clipDir, extraFknDir)
-        files = files + [os.path.join(clipDir,extraFknDir,name) for name in os.listdir(path) if name.endswith(fType)]
+        files = files + [os.path.join(clipDir,extraFknDir,name) for name in os.listdir(path)]
     files = sorted(files)
     path = os.path.join(dataDir, methodDirs[0], files[0])
-    testFileGT = skvideo.io.vread(path)
+    testFileGT = read_pngs_to_array(path)
     frams,rows,cols,ch = testFileGT.shape
     framRange = [i for i in range(frams)]
     directions = [framRange, framRange[::-1]]
@@ -72,9 +78,9 @@ if compute:
 
             # pull frames from MP4
             pathMethod = os.path.join(dataDir, methodDir, file)
-            framesMethod = np.clip(skvideo.io.vread(pathMethod).astype(np.float32) / (2**depth-1),0,1)
+            framesMethod = np.clip(read_pngs_to_array(pathMethod).astype(np.float32) / (2**depth-1),0,1)
             pathGT = os.path.join(dataDir, gtDir, file)
-            framesGT = np.clip(skvideo.io.vread(pathGT).astype(np.float32) / (2**depth-1),0,1)
+            framesGT = np.clip(read_pngs_to_array(pathGT).astype(np.float32) / (2**depth-1),0,1)
 
             # video metrics
 
@@ -183,8 +189,8 @@ if compute:
                             #patchMSE = np.mean(mapMSE[startR:endR,startC:endC,:])
                             #scorePatchPSNR = np.clip((10 * np.log10(pixMax**2 / patchMSE)),0,100)
                             if dataDir == 'BaistCroppedOutput':
-                                patchGtTensor = F.interpolate(gtTensor[:,:,startR:endR,startC:endC], scale_factor=2.0, mode='bicubic', align_corners=False)
-                                patchMethodTensor = F.interpolate(methodTensor[:,:,startR:endR,startC:endC], scale_factor=2.0, mode='bicubic', align_corners=False)
+                                patchGtTensor = F.interpolate(gtTensor[:,:,startR:endR,startC:endC], scale_factor=2.0, mode='bilinear', align_corners=False)
+                                patchMethodTensor = F.interpolate(methodTensor[:,:,startR:endR,startC:endC], scale_factor=2.0, mode='bilinear', align_corners=False)
                                 scorePatchLPIPS = fnLPIPS(patchGtTensor, patchMethodTensor).squeeze(0,1,2).cpu().detach().numpy()[0]                                
                             else:
                                 scorePatchLPIPS = fnLPIPS(gtTensor[:,:,startR:endR,startC:endC], methodTensor[:,:,startR:endR,startC:endC]).squeeze(0,1,2).cpu().detach().numpy()[0]                                
